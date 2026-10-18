@@ -1,0 +1,265 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  YearView 1.1.17 - per-user MSI package.
+
+  Design notes
+  ============
+  * PER-USER, NO ELEVATION. InstallPrivileges="limited" and ALLUSERS is deliberately
+    never set, so Windows Installer resolves LocalAppDataFolder / DesktopFolder /
+    ProgramMenuFolder / StartupFolder to the *invoking user's* profile. Do not add
+    ALLUSERS=1 without also moving INSTALLFOLDER out of AppData.
+  * UpgradeCode must NEVER change across versions - it is the identity that lets
+    2.0.11 replace 1.1.8. ProductCode (Product/@Id) must change EVERY version.
+    Both GUIDs here are derived deterministically (uuid5) so they can be regenerated.
+    >>> If an earlier YearView MSI shipped with a different UpgradeCode, paste THAT
+        GUID in below, otherwise the old product will be left installed alongside. <<<
+  * Component GUIDs are stable per component. Never reuse one for a different file.
+  * RemoveExistingProducts is sequenced after InstallValidate so the previous version
+    is fully uninstalled (which runs its StopBridge action) before new files land.
+  * The .ps1 is not locked while the bridge runs - PowerShell reads it once - so files
+    always overwrite cleanly. The problem StopBridge solves is a *stale bridge still
+    listening on port 8377*: the new shortcut would otherwise attach to the old view.
+  * Shortcut targets use [WindowsFolder]System32\... rather than [SystemFolder]:
+    in a 32-bit package on 64-bit Windows [SystemFolder] is SysWOW64, which would
+    launch 32-bit PowerShell. The literal path is correct on both architectures.
+  * Autostart is opt-in (Feature level 1000):
+        msiexec /i YearView-3.4.9.msi ADDLOCAL=FeatureMain,FeatureAutostart
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+
+  <Product Id="51B8C8D0-9171-553F-8FCD-AA6F37E179B4"
+           Name="YearView"
+           Language="1033"
+           Version="3.4.9"
+           Manufacturer="daniellmnz"
+           UpgradeCode="D18151D9-0EF3-5CA2-B555-2069861B2555">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perUser"
+             Description="Outlook year-at-a-glance calendar"
+             Comments="Year-at-a-glance view of your Outlook calendar"
+             Manufacturer="daniellmnz" />
+
+    <Media Id="1" Cabinet="yearview.cab" EmbedCab="yes" />
+
+    <!-- Add/Remove Programs presentation -->
+    <Property Id="ARPPRODUCTICON" Value="YearViewIcon" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPCONTACT" Value="daniellmnz" />
+
+    <Icon Id="YearViewIcon" SourceFile="src/YearView.ico" />
+
+    <!-- ================= Upgrade handling ================= -->
+    <Upgrade Id="D18151D9-0EF3-5CA2-B555-2069861B2555">
+      <!-- any strictly older version is removed and replaced -->
+      <UpgradeVersion Minimum="0.0.0" Maximum="3.4.9"
+                      IncludeMinimum="yes" IncludeMaximum="no"
+                      Property="OLDERVERSIONBEINGUPGRADED" />
+      <!-- block downgrades -->
+      <UpgradeVersion Minimum="3.4.9" IncludeMinimum="no"
+                      OnlyDetect="yes" Property="NEWERVERSIONDETECTED" />
+    </Upgrade>
+
+    <Condition Message="A newer version of YearView is already installed.">
+      NOT NEWERVERSIONDETECTED
+    </Condition>
+
+    <!-- ================= Directory layout ================= -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLFOLDER" Name="YearView">
+
+          <Component Id="CompAppScript" Guid="71C6F4C5-D0D9-5AA5-8A52-2B3C5C13F422">
+            <File Id="FileAppScript" Name="New-OutlookYearView.ps1"
+                  Source="src/New-OutlookYearView.ps1" KeyPath="yes" />
+          </Component>
+
+          <Component Id="CompCmd" Guid="29BA013E-F5D2-552E-A903-411FBDE86393">
+            <File Id="FileCmd" Name="YearView.cmd"
+                  Source="src/YearView.cmd" KeyPath="yes" />
+          </Component>
+
+          <Component Id="CompStopCmd" Guid="4C6E1A02-9C3F-5F4B-BD11-7A2E6D5C8B10">
+            <File Id="FileStopCmd" Name="Stop-YearView.cmd"
+                  Source="src/Stop-YearView.cmd" KeyPath="yes" />
+          </Component>
+
+          <Component Id="CompIcon" Guid="C2BC1EEE-91E9-54DF-988E-43546932DFF5">
+            <File Id="FileIcon" Name="YearView.ico"
+                  Source="src/YearView.ico" KeyPath="yes" />
+          </Component>
+
+          <Component Id="CompLauncherVbs" Guid="9FB7458C-1105-5B63-BE23-975D42720B62">
+            <File Id="FileLauncherVbs" Name="YearView-launch.vbs"
+                  Source="src/YearView-launch.vbs" KeyPath="yes" />
+          </Component>
+
+          <Component Id="CompFixShortcuts" Guid="B9FDF85B-1D18-54B1-A837-8731CF0B103E">
+            <File Id="FileFixShortcuts" Name="Fix-YearViewShortcuts.cmd"
+                  Source="src/Fix-YearViewShortcuts.cmd" KeyPath="yes" />
+          </Component>
+
+          <Component Id="CompRemoveData" Guid="0EF847B4-C351-53B1-A676-88042F881DFE">
+            <File Id="FileRemoveData" Name="Remove-YearViewData.cmd"
+                  Source="src/Remove-YearViewData.cmd" KeyPath="yes" />
+          </Component>
+
+          <!-- Records the install location and gives uninstall an HKCU key to reap.
+               yv-error.log (written by the app when it fails while hidden) is not owned
+               by MSI; Stop-YearView.cmd deletes it, so the folder ends empty and
+               Windows Installer can remove it. -->
+          <Component Id="CompCleanup" Guid="979E1E97-68AC-59A7-A0AC-6C4255B7BCC9">
+            <RegistryValue Root="HKCU" Key="Software\YearView" Name="InstallFolder"
+                           Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+          </Component>
+
+        </Directory>
+      </Directory>
+
+      <Directory Id="DesktopFolder">
+        <Component Id="CompDesktopShortcut" Guid="955AB374-CBCD-58BA-846E-9350649F6176">
+          <Shortcut Id="ShortcutDesktop"
+                    Name="YearView"
+                    Description="Outlook year-at-a-glance calendar"
+                    Target="[WindowsFolder]System32\wscript.exe"
+                    Arguments="&quot;[INSTALLFOLDER]YearView-launch.vbs&quot;"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="YearViewIcon" IconIndex="0"
+                    Show="minimized" />
+          <RegistryValue Root="HKCU" Key="Software\YearView" Name="DesktopShortcut"
+                         Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+
+      <Directory Id="ProgramMenuFolder">
+        <Component Id="CompMenuShortcut" Guid="142DF383-4407-5485-816F-A58A6454CC7D">
+          <Shortcut Id="ShortcutMenu"
+                    Name="YearView"
+                    Description="Outlook year-at-a-glance calendar"
+                    Target="[WindowsFolder]System32\wscript.exe"
+                    Arguments="&quot;[INSTALLFOLDER]YearView-launch.vbs&quot;"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="YearViewIcon" IconIndex="0"
+                    Show="minimized" />
+          <RegistryValue Root="HKCU" Key="Software\YearView" Name="MenuShortcut"
+                         Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+
+      <!-- Opt-in feature; see FeatureAutostart below. -->
+      <Directory Id="StartupFolder">
+        <Component Id="CompStartupShortcut" Guid="AE392F10-4029-572E-98D8-FA362B7971F3">
+          <Shortcut Id="ShortcutStartup"
+                    Name="YearView Bridge"
+                    Description="YearView bridge (background)"
+                    Target="[WindowsFolder]System32\wscript.exe"
+                    Arguments="&quot;[INSTALLFOLDER]YearView-launch.vbs&quot; -Serve -App -NoOpen"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="YearViewIcon" IconIndex="0"
+                    Show="minimized" />
+          <RegistryValue Root="HKCU" Key="Software\YearView" Name="StartupShortcut"
+                         Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+
+    </Directory>
+
+    <!-- ================= Stop a running bridge =================
+         The .ps1 is never locked (PowerShell reads it once), so files always overwrite.
+         What must not survive is a *stale bridge still listening on 8377*: the new
+         shortcut would silently attach to it and serve the old view.
+
+         Type 50 (Source = a property holding the exe path) rather than type 34
+         (Source = a directory), because type 34 is not implemented by wixl and this
+         source has to build on both toolchains. Immediate, not deferred: [INSTALLFOLDER]
+         only expands in the immediate sequence, and a per-user package needs no
+         elevation. Return="ignore" - a bridge that is not running must never fail
+         the install. Stop-YearView.cmd is idempotent and always exits 0.        -->
+    <CustomAction Id="SetCmdExe" Property="YVSTOP"
+                  Value="[WindowsFolder]System32\cmd.exe" Execute="immediate" />
+
+    <CustomAction Id="StopBridgeOnRemove" Property="YVSTOP"
+                  ExeCommand="/c &quot;[INSTALLFOLDER]Stop-YearView.cmd&quot;"
+                  Execute="immediate" Return="ignore" />
+
+    <CustomAction Id="StopBridgeOnInstall" Property="YVSTOP"
+                  ExeCommand="/c &quot;[INSTALLFOLDER]Stop-YearView.cmd&quot;"
+                  Execute="immediate" Return="ignore" />
+
+    <CustomAction Id="WipeDataOnRemove" Property="YVSTOP"
+                  ExeCommand="/c &quot;[INSTALLFOLDER]Remove-YearViewData.cmd&quot;"
+                  Execute="immediate" Return="ignore" />
+
+    <CustomAction Id="FixShortcutsOnInstall" Property="YVSTOP"
+                  ExeCommand="/c &quot;[INSTALLFOLDER]Fix-YearViewShortcuts.cmd&quot;"
+                  Execute="immediate" Return="ignore" />
+
+    <InstallExecuteSequence>
+      <!-- wixl constraint (learned from the failed 1.1.28 build): a Custom's
+           Before/After must reference a STANDARD action only. Anchoring one custom
+           action to another sent wixl's resolver haywire - RemoveExistingProducts
+           landed between InstallFiles and CreateShortcuts, an illegal position,
+           and msiexec refused the whole package with error 2613. -->
+      <!-- Early schedule: the previous version is fully uninstalled (running its own
+           StopBridgeOnRemove) before any new file is laid down. -->
+      <RemoveExistingProducts After="InstallValidate" />
+      <Custom Action="SetCmdExe" After="CostFinalize">1</Custom>
+      <!-- uninstall / upgrade removal: kill the bridge before its files vanish -->
+      <!-- Stop and wipe use EXPLICIT sequence numbers (learned in the 2.0.11 build): wixl's Before/After resolver placed same-anchor customs
+           unpredictably - three different orderings (declaration order, action
+           name, swapped declarations) all produced wipe-before-stop, and one
+           Before="RemoveFiles" build landed an action at 1402. Explicit
+           numbers 3301/3302 sit between RemoveShortcuts (3200) and
+           RemoveFiles (3500) by construction: bridge down, then data wiped,
+           then files removed - while Remove-YearViewData.cmd still exists. -->
+      <Custom Action="WipeDataOnRemove" Sequence="3302">
+        Installed AND REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE
+      </Custom>
+      <!-- Leave-no-trace purge of runtime data (cache, calendar selection,
+           saved filter, verdict, log, exported signing cert). GENUINE
+           UNINSTALL ONLY: REMOVE=ALL excludes feature changes, NOT
+           UPGRADINGPRODUCTCODE means upgrades preserve the data. Anchored to
+           the STANDARD action (wixl custom-after-custom constraint) and
+           declared after StopBridgeOnRemove so it sorts later: bridge down,
+           then purge, then RemoveFiles - while this cmd still exists. -->
+      <Custom Action="StopBridgeOnRemove" Sequence="3301">
+        Installed AND (REMOVE="ALL" OR UPGRADINGPRODUCTCODE)
+      </Custom>
+      <!-- install: kill any bridge left over from a script-based install -->
+      <Custom Action="StopBridgeOnInstall" After="InstallFiles">
+        NOT Installed
+      </Custom>
+      <!-- Heal legacy powershell.exe-targeting shortcuts, incl. pinned-taskbar
+           copies the installer cannot otherwise reach. Sequenced AFTER
+           InstallFinalize: immediate actions there run once the deferred script
+           has completed, so Fix-YearViewShortcuts.cmd and the VBS it points
+           shortcuts at are actually on disk. -->
+      <Custom Action="FixShortcutsOnInstall" After="InstallFinalize">
+        NOT Installed
+      </Custom>
+    </InstallExecuteSequence>
+
+    <!-- ================= Features ================= -->
+    <Feature Id="FeatureMain" Title="YearView" Description="Application and shortcuts" Level="1">
+      <ComponentRef Id="CompAppScript" />
+      <ComponentRef Id="CompCmd" />
+      <ComponentRef Id="CompStopCmd" />
+      <ComponentRef Id="CompIcon" />
+      <ComponentRef Id="CompLauncherVbs" />
+      <ComponentRef Id="CompFixShortcuts" />
+      <ComponentRef Id="CompRemoveData" />
+      <ComponentRef Id="CompCleanup" />
+      <ComponentRef Id="CompDesktopShortcut" />
+      <ComponentRef Id="CompMenuShortcut" />
+    </Feature>
+
+    <!-- Level 1000 = not installed unless explicitly requested:
+           msiexec /i YearView-3.4.9.msi ADDLOCAL=FeatureMain,FeatureAutostart  -->
+    <Feature Id="FeatureAutostart" Title="Start at sign-in" Description="Runs the bridge in the background at sign-in" Level="1000">
+      <ComponentRef Id="CompStartupShortcut" />
+    </Feature>
+
+  </Product>
+</Wix>

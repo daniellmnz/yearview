@@ -1,0 +1,6 @@
+# Keep the Windows scripts byte-for-byte as committed (CRLF line endings), so a
+# checkout on any platform builds an identical MSI and runs correctly under cmd.
+*.ps1 -text
+*.cmd -text
+*.vbs -text
+*.ico binary

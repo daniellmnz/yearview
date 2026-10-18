@@ -1,0 +1,18 @@
+# YearView runtime data - written beside the script when it runs from src\
+yv-*.cfg
+yv-*.cfg.tmp
+yv-page-*
+yv-fastscan.ok
+yv-error.log
+edge-profile/
+YearView-Signing.cer
+
+# MSI build output
+obj/
+*.msi
+*.wixobj
+*.wixpdb
+
+# Windows clutter
+Thumbs.db
+desktop.ini
