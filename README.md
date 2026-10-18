@@ -33,27 +33,15 @@ You can also create, open and delete items from the year view.
 
 ## Installing
 
-Download from the [Releases](../../releases) page. Every install is per-user:
-nothing needs administrator rights, and everything goes in
-`%LOCALAPPDATA%\YearView`.
+Download `YearView-<version>.msi` from the [Releases](../../releases) page
+and run it. It installs for your Windows account only, needs no administrator
+rights, and puts everything in `%LOCALAPPDATA%\YearView`. Choose the optional
+"Start at sign-in" feature if you want YearView ready in the background. To
+remove it, use Settings → Apps.
 
-**MSI (recommended).** Run `YearView-3.4.9.msi`. Choose the optional "Start at
-sign-in" feature if you want YearView ready in the background. To remove it,
-use Settings → Apps.
-
-**Script installer.** An alternative that doesn't use Windows Installer:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-YearView.ps1            # install
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-YearView.ps1 -Startup   # also start at sign-in
-powershell -NoProfile -ExecutionPolicy Bypass -File .\Install-YearView.ps1 -Uninstall
-```
-
-**From source.** Clone the repository and run `src\YearView.cmd`.
-
-The packages are not code-signed, so Windows SmartScreen may warn before
-running them. Each release lists SHA-256 hashes, which you can check before
-installing:
+The MSI is not code-signed, so Windows SmartScreen may warn before running it.
+Each release includes `SHA256SUMS.txt`; you can check the download against it
+before installing:
 
 ```powershell
 Get-FileHash .\YearView-3.4.9.msi

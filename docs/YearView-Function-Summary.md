@@ -298,11 +298,12 @@ the year. With `-Serve -App` it runs the full interactive application; adding
 `-NoOpen` starts the bridge silently, which is how the optional sign-in
 autostart works. Deployment is via a per-user MSI (no elevation; stops any
 running bridge before replacing files; upgrades any earlier version in place;
-heals legacy shortcuts) or an equivalent self-contained installer script; both
-install six files to `%LOCALAPPDATA%\YearView` — the application script, the
-windowless VBS launcher, a command-line launcher, a bridge-stop utility, the
-shortcut healer, and the icon — plus Desktop, Start Menu, and Startup
-shortcuts. Runtime data (encrypted page cache, validation verdict, calendar selection,
+heals legacy shortcuts), which installs seven files to
+`%LOCALAPPDATA%\YearView` — the application script, the windowless VBS
+launcher, a command-line launcher, a bridge-stop utility, the shortcut healer,
+the data-removal helper used on uninstall, and the icon — plus Desktop, Start
+Menu, and optional Startup shortcuts. YearView can also be run straight from
+the source folder with `src\YearView.cmd`. Runtime data (encrypted page cache, validation verdict, calendar selection,
 saved category filter, error log, and the app window's own Edge profile)
 lives beside the script and survives upgrades; a genuine uninstall closes the
 app window and removes all of it, leaving nothing behind. YearView is designed
@@ -311,5 +312,4 @@ another account could reach the running bridge (see the Security Design
 note). The full switch reference:
 `-Year`, `-OutFile`, `-NoOpen`, `-IncludeUncategorised`, `-ClassicScan`,
 `-Serve`, `-App`, `-Visible`, `-WindowWidth`, `-WindowHeight`, `-Port`
-(plus internal `-HiddenChild`); installer: `-InstallDir`, `-Startup`,
-`-Uninstall`, `-NoShortcuts`, `-Quiet`.
+(plus internal `-HiddenChild`).
