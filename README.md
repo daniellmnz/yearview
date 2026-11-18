@@ -14,11 +14,21 @@ You can also create, open and delete items from the year view.
   filter. For each category, you can choose whether to show it at all and
   whether its items show their titles.
 - To create an item, click a category and then a day, or drag across several
-  days. Click a bar to open it in Outlook, or right-click to delete it.
+  days. Click a bar to open it in Outlook, drag it to another day to move
+  it, or right-click to delete it.
 - Updates itself a few seconds after calendar changes, and switches instantly
   between years you have already viewed.
 - The year can start at the current month, or at any month you choose, so a
   view can run across into next year.
+- Find items by title or category, combining terms with AND and OR. A matched
+  category is outlined in the legend. Plus a Today button and keyboard
+  shortcuts.
+- Rest the pointer on an item for its full details. Tentative items (such as
+  invitations you haven't accepted) are shown hatched, unless you turn that
+  off.
+- Week can start on Sunday or Monday. Optional item counts in the legend, and
+  an optional stripe for an item's second category.
+- Page shading: keep the page white, or tint it light, medium or darker grey.
 - Prints to a chosen number of pages, with or without the category legend.
 - Works with any calendar in your default Outlook mailbox.
 
@@ -44,7 +54,7 @@ Each release includes `SHA256SUMS.txt`; you can check the download against it
 before installing:
 
 ```powershell
-Get-FileHash .\YearView-3.4.9.msi
+Get-FileHash .\YearView-3.6.13.msi
 ```
 
 ## Using it
@@ -53,7 +63,11 @@ Launch **YearView** from the Start Menu or Desktop, with Outlook already
 running. Click **?** in the window for quick help, and **⚙** for the settings:
 
 - year start month;
-- confirm before deleting;
+- week start (Sunday or Monday);
+- item counts in the legend, and a stripe for a second category;
+- hatching for tentative items;
+- page shading (white, or light, medium or darker grey);
+- confirm before deleting, and before moving;
 - print page count;
 - print legend.
 
@@ -95,7 +109,7 @@ On Windows, with the [WiX Toolset v3](https://github.com/wixtoolset/wix3/release
 On Linux, `wixl` from msitools builds the same package:
 
 ```sh
-wixl -o YearView-3.4.9.msi YearView.wxs
+wixl -o YearView-3.6.13.msi YearView.wxs
 ```
 
 ## Documentation

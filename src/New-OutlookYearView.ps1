@@ -83,6 +83,7 @@ $script:lastBaselineMs  = 0               # /build's re-baseline sort duration, 
 # item-for-item on the live calendar; any error or mismatch falls back to the
 # classic reader permanently, with a warning - so output can never differ.
 $script:fastScanChecked = $false
+$script:readerSig       = $null          # v3.6.11: hash of the reader's own code (lazy; see Get-ReaderSignature)
 $script:fastScanOk      = $true
 # A waitable handle whose ONLY job is pumping: on an STA thread the CLR services
 # COM messages during managed blocking waits (WaitOne), which Start-Sleep never
@@ -92,7 +93,7 @@ $script:fastScanOk      = $true
 # LastModificationTime fingerprint - the reported 10-20 s update lag.
 $script:comPump = New-Object Threading.ManualResetEvent($false)
 $script:modCheckInterval = -1             # adaptive fingerprint cadence (seconds); -1 = measure on first run
-$script:yvVersion = '3.4.9'              # ALSO bump the stamp string when changing this
+$script:yvVersion = '3.6.13'              # ALSO bump the stamp string when changing this
 $script:contentHashes = @{}               # per-year order-independent content hash (echo suppression)
 # Calendar selection (v2.0.0): empty = the default calendar. Restricted by
 # design to calendars in the DEFAULT STORE (the picker only offers those);
@@ -138,6 +139,7 @@ $script:lastSpillHash   = ''             # spill hash of the most recent build
 $script:spillHashes     = @{}            # year -> spill hash embedded in that year's page
 $script:pageHideLits    = @{}            # v2.1.22: the exact HIDE_SEED literal baked into each cached page (for re-stamping)
 $script:confirmDelete   = $true          # v2.1.29: ask before deleting (default ON - deletion is irreversible in the view)
+$script:confirmMove     = $true          # v3.6.4: ask before moving a dragged item (default ON)
 $script:scrollYears     = $false         # v3.1.6: continuous scrolling across years is now OPT-IN
 # v3.4.7: categories whose bars are drawn WITHOUT their titles, as the client's
 # csv ('__none__' = no category). Empty = every category shows its titles.
@@ -147,6 +149,13 @@ $script:noTitles        = ''
 $script:startMonth      = 0
 $script:printPages      = 1              # v3.2.0: sheets to scale a print onto; 0 = as many as it takes
 $script:printLegend     = $true          # v3.4.8: print the category legend row at the foot of the sheet
+$script:shade           = 0              # v3.5.0: page shading - 0 white, 1 light, 2 medium, 3 darker grey
+$script:weekStart       = 0              # v3.6.0: first column of the week - 0 Sunday, 1 Monday
+$script:legendCounts    = $false         # v3.6.0: item counts beside each legend category
+$script:catStripe       = $false         # v3.6.0: a second category drawn as a stripe on the bar
+$script:showTentative   = $true          # v3.6.5: draw tentative items hatched (default ON, as since v3.6.0)
+$script:noBusy          = $false         # v3.6.0: set when the Table cannot supply BusyStatus (tentative marking then off)
+$script:moveRecheck     = $null          # v3.6.2: when set, the time at which a moved item is re-read once more
 $script:lastCount       = -1             # baseline item count
 $script:lastModTicks    = 0L             # newest-LastModificationTime fingerprint
 $script:lastChangeTicks = 0L             # stamp of last detected change (drives /dirty)
@@ -211,10 +220,63 @@ function ConvertTo-CliArg([string]$s) {
     $sb.ToString()
 }
 
+function Get-ReaderSignature {
+    # v3.6.11: a hash of the READER'S OWN CODE, used to key the fast-scan
+    # verdict on disk.
+    #
+    # The verdict used to be keyed on $script:yvVersion, which meant every
+    # release threw it away and the next session paid the three-second dual
+    # read again to re-prove something already proven. The reader had not in
+    # fact changed since v3.6.0 - four releases each re-earned an identical
+    # verdict. What the verdict actually depends on is the reader, so that is
+    # what it is now keyed on: change Read-YearFast, Read-YearClassic or
+    # Compare-YearReads and the verdict is correctly void; change anything
+    # else and it stands.
+    #
+    # Brace-matched from the script's own text rather than parsed: parsing the
+    # whole file costs ~340 ms against ~70 ms for this, and both are checked
+    # against each other by the build gate, so a discrepancy is caught before
+    # release rather than at a user's startup. Anything unexpected returns
+    # $null, and the caller then validates exactly as it always did - the
+    # fallback is the old behaviour, never a skipped check.
+    if ($script:readerSig) { return $script:readerSig }
+    try {
+        $src = [IO.File]::ReadAllText($PSCommandPath)
+        $sb  = New-Object Text.StringBuilder
+        foreach ($n in @('Read-YearFast', 'Read-YearClassic', 'Compare-YearReads')) {
+            $a = $src.IndexOf(('function {0}(' -f $n))
+            if ($a -lt 0) { return $null }
+            $d = 0; $j = $a; $L = $src.Length
+            while ($j -lt $L) {
+                $c = $src[$j]
+                if ($c -eq '{') { $d++ }
+                elseif ($c -eq '}') { $d--; if ($d -eq 0) { $j++; break } }
+                $j++
+            }
+            if ($d -ne 0) { return $null }          # unbalanced - refuse to guess
+            [void]$sb.Append($src.Substring($a, $j - $a))
+        }
+        if ($sb.Length -lt 4000) { return $null }   # implausibly short - refuse
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $script:readerSig = [BitConverter]::ToString(
+                $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($sb.ToString()))).Replace('-', '').Substring(0, 16)
+        } finally { $sha.Dispose() }
+        return $script:readerSig
+    } catch { return $null }
+}
+
 function ConvertTo-JsonStr([string]$s) {
-    # JSON string literal with full escaping. The common no-specials case is a
-    # single native regex scan with zero callback invocations, so this is far
-    # cheaper than ConvertTo-Json while escaping exactly the same characters.
+    # JSON string literal with full escaping - exactly the characters
+    # ConvertTo-Json escapes, at a fraction of its cost.
+    #
+    # v3.6.8: the no-specials case returns before touching Replace. The
+    # scriptblock below never fires for such a string, but PowerShell still
+    # converts it to a MatchEvaluator delegate on every call, and that was
+    # costing ~0.3 ms a call - over a second a build at three calls per item.
+    # When the pattern does not match, Replace returns the input unchanged, so
+    # quoting it directly is the same string by definition.
+    if (-not $script:jsonEscRx.IsMatch($s)) { return '"' + $s + '"' }
     '"' + $script:jsonEscRx.Replace($s, {
         param($m)
         switch ($m.Value) {
@@ -495,10 +557,18 @@ function Ensure-Outlook {
             if ((Test-Path $vf) -and ((Get-Date) - (Get-Item $vf).LastWriteTime).TotalDays -lt 7) {
                 # 7-day expiry: silent environmental divergence can only be
                 # DETECTED by the dual read, so re-earn the verdict weekly.
-                $want = ('{0}|{1}' -f $script:yvVersion, [string]$script:outlook.Version)
-                if (((Get-Content $vf -ErrorAction Stop) -join '') -eq $want) {
-                    $script:fastScanChecked = $true
-                    Write-Host 'Fast-scan verdict restored from disk - skipping this session''s dual-reader validation.' -ForegroundColor DarkCyan
+                # v3.6.11: the signature is computed ONLY here, where a stamp
+                # already exists and is in date - so a session with no stamp to
+                # check pays nothing for it. A stamp written by 3.6.10 or
+                # earlier carries a version string, will not match, and simply
+                # re-validates once before being rewritten in the new form.
+                $sig = Get-ReaderSignature
+                if ($sig) {
+                    $want = ('{0}|{1}' -f $sig, [string]$script:outlook.Version)
+                    if (((Get-Content $vf -ErrorAction Stop) -join '') -eq $want) {
+                        $script:fastScanChecked = $true
+                        Write-Host 'Fast-scan verdict restored from disk - skipping this session''s dual-reader validation.' -ForegroundColor DarkCyan
+                    }
                 }
             }
         } catch {}
@@ -609,8 +679,24 @@ $template = @'
   :root{
     --ink:#1a1d21; --muted:#7a8088; --grid:#d7dade; --gridlight:#e9ebee;
     --weekend:#c6d3e4; --daynum:#8a9099; --paper:#ffffff; --band:#f6f7f9;
-    --today:#c11a25;
+    --today:#c11a25; --out:#eceef0;
   }
+  /* v3.5.0: Page shading. Every white area of the page is var(--paper), so a
+     level is a set of variable overrides on <html>. The weekend tint, month
+     labels and days outside a month step down with it; the bars keep their
+     own colours. Applies on paper too, as on screen.
+     v3.5.1: the LINES now darken faster than the paper, so their contrast
+     against it RISES with each level instead of holding roughly level (which
+     read as fading lines on the darker greys). Month and label lines
+     (--grid) go 1.40 / 1.52 / 1.67 / 1.82 : 1 against the paper, day lines
+     (--gridlight) 1.19 / 1.26 / 1.32 / 1.41 : 1, and the outline grey of
+     buttons, chips and hollow bars (--muted) steps down with them. */
+  html[data-shade="1"]{--paper:#f3f4f6;--band:#eaecef;--out:#e2e5e8;--gridlight:#dadbde;
+    --grid:#c6c8cc;--weekend:#bccbde;--muted:#72787f}
+  html[data-shade="2"]{--paper:#e7e9ec;--band:#dcdfe3;--out:#d4d8dc;--gridlight:#cbcccf;
+    --grid:#b4b6ba;--weekend:#b1c2d8;--daynum:#7a8089;--muted:#6a7077}
+  html[data-shade="3"]{--paper:#d9dce0;--band:#cdd1d6;--out:#c6cad0;--gridlight:#b9babd;
+    --grid:#a1a4a7;--weekend:#a5b8d1;--daynum:#6b717a;--muted:#5f656c}
   *{box-sizing:border-box}
   html,body{margin:0;padding:0;background:var(--paper);color:var(--ink);
     font:12px/1.25 "Segoe UI", system-ui, -apple-system, sans-serif;}
@@ -661,7 +747,7 @@ $template = @'
     grid-auto-rows:min-content;position:relative}
   .day{grid-row:1 / var(--rows);border-left:1px solid var(--gridlight);min-height:100%;}
   .day.we{background:var(--weekend)}
-  .day.out{background:#eceef0}
+  .day.out{background:var(--out)}
   .day.today{}
   /* Today marker is a separate click-transparent overlay. Putting z-index on the
      day cell itself lifted that full-height background cell above the event bars,
@@ -681,6 +767,34 @@ $template = @'
      bar keeps its colour, size, outline and tooltip; only the text goes.
      Applies on paper too, as on screen. */
   .bar.notitle{color:transparent}
+  /* v3.6.0: Find - everything but the matches steps back */
+  #months.finding .bar:not(.hit){opacity:.18}
+  #months.finding .bar.hit{outline:2px solid var(--ink);outline-offset:-1px;z-index:2}
+  header.yv .findbox{font:inherit;font-size:11px;padding:4px 8px;border:1px solid var(--grid);
+    border-radius:4px;width:130px;background:#fff;color:var(--ink)}
+  header.yv .findn{font-size:11px;color:var(--muted);align-self:center;min-width:46px}
+  header.yv .todaybtn{font-size:11px;padding:4px 10px;margin-left:4px}
+  .todayov.pulse{animation:yvpulse .7s ease-in-out 3}
+  @keyframes yvpulse{50%{outline-width:6px;outline-offset:-6px}}
+  .legend .item .cnt{color:var(--muted);font-size:10.5px;margin-left:2px}
+  /* v3.6.1: dragging a bar to another day */
+  /* bar text is not selectable: a selection (a double-click is enough) makes
+     the browser start its OWN text drag on the next press and swallow the gesture */
+  .bar{user-select:none;-webkit-user-select:none}
+  body.moving{user-select:none;-webkit-user-select:none;cursor:grabbing}
+  body.moving .bar{cursor:grabbing}
+  .bar.mvsrc{opacity:.4}
+  .day.mvsel{background:#cfe8c8 !important;outline:1px solid #4f9a41;outline-offset:-1px}
+  /* v3.6.0: hover card - replaces the browser's own tooltip on bars */
+  .hcard{position:fixed;display:none;z-index:30;background:#fff;border:1px solid var(--grid);
+    border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,.18);padding:8px 11px;font-size:11.5px;
+    line-height:1.4;max-width:320px;pointer-events:none;color:var(--ink)}
+  .hcard .ht{font-weight:600;font-size:12.5px;margin-bottom:2px;overflow-wrap:anywhere}
+  .hcard .hc{display:flex;flex-wrap:wrap;gap:2px 10px;color:#3a3f45;margin-top:3px}
+  .hcard .hc span{display:inline-flex;align-items:center;gap:4px}
+  .hcard .hc i{width:9px;height:9px;border-radius:2px;border:1px solid rgba(0,0,0,.2);display:inline-block}
+  .hcard .hf{color:#3a3f45;margin-top:3px}
+  .hcard .hh{color:var(--muted);font-size:10.5px;margin-top:5px}
   /* v3.4.8: set only for the duration of a print when "Print category legend"
      is off. A class rather than a print-media rule, because the fit-to-pages
      scale is measured at beforeprint, before print rules are in force. */
@@ -696,6 +810,13 @@ $template = @'
     cursor:pointer;padding:2px 7px;border-radius:10px;border:1px solid transparent;user-select:none}
   .legend .item:hover{background:var(--band);border-color:var(--grid)}
   .legend .item.sel{background:#fff;border-color:var(--today);box-shadow:0 0 0 2px var(--today);font-weight:600}
+  /* v3.6.13: a legend chip whose CATEGORY NAME the search matches, marked
+     exactly as a matching bar is. Chips are deliberately NOT faded the way
+     non-matching bars are: the legend is the control surface, and dimming it
+     during a search would make filtering harder just when it is wanted. The
+     outline sits on top of .sel's ring and .off's dimming without disturbing
+     either. */
+  .legend .item.hit{outline:2px solid var(--ink);outline-offset:-1px}
   .legend .sw{width:12px;height:12px;border-radius:2px;border:1px solid rgba(0,0,0,.2)}
   /* v2.0.20: "(No category)" swatch echoes the hollow uncategorised bar */
   .legend .sw.none{background:#fff;border:1px solid var(--muted)}
@@ -794,7 +915,7 @@ $template = @'
     header.yv{position:static;padding-bottom:0}
     .legend{position:static;border-top:none}
     header.yv .actions{display:none}
-    .yrnav,.toast,.ctx,.fpanel,.helpov,.credit{display:none !important}
+    .yrnav,.toast,.ctx,.fpanel,.helpov,.credit,.hcard{display:none !important}
     .legend .newcat,.legend .clearcat,.legend .filtercat,.legend .hint{display:none !important}
     .dowhead{position:static}
     body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
@@ -804,9 +925,11 @@ $template = @'
 <body>
 <div class="wrap">
   <header class="yv">
-    <h1><button class="yrnav" id="prevYr" title="Previous year">&#8249;</button><span id="yrword">Year </span><span id="yrlabel">__YEAR__</span><button class="yrnav" id="nextYr" title="Next year">&#8250;</button></h1>
+    <h1><button class="yrnav" id="prevYr" title="Previous year">&#8249;</button><span id="yrword">Year </span><span id="yrlabel">__YEAR__</span><button class="yrnav" id="nextYr" title="Next year">&#8250;</button><button class="yrnav todaybtn" id="todayBtn" title="Go to today (T)">Today</button></h1>
     <span class="sub" id="stamp"></span>
     <div class="actions">
+      <span class="findn" id="findN"></span>
+      <input class="findbox" id="findBox" type="search" placeholder="Find  ( / )" autocomplete="off" spellcheck="false" title="Find items by title or category. AND and OR, in capitals, combine terms: abc AND ghi, abc OR ghi">
       <button id="calBtn" style="display:none" title="Choose which calendar to display">Calendar</button>
       <button id="refreshBtn" style="display:none" title="Re-read the calendar from Outlook">Refresh</button>
       <button onclick="window.print()">Print</button>
@@ -825,15 +948,18 @@ $template = @'
       <div class="helphead">YearView &#8212; quick help<span class="helpx" id="helpx">&#10005;</span></div>
       <dl>
         <dt>Create an item</dt><dd>Click a category in the legend &#8212; or <b>(No category)</b> for an item with none &#8212; then click a day, or drag across days for a multi-day event. The Outlook item opens with the category set. The selection stays armed for repeat adds; press Esc or click <b>&#10005; Deselect</b> when done.</dd>
-        <dt>Open an item</dt><dd>Click its bar, or right-click it &#8594; <b>Open in Outlook</b>.</dd>
+        <dt>Open an item</dt><dd>Click its bar, or right-click it &#8594; <b>Open in Outlook</b>. Rest the pointer on a bar to see its full title, dates, times and categories. Hatched bars are <b>tentative</b> &#8212; typically an invitation you have not yet accepted; the hatching can be turned off in <b>&#9881; Settings</b>.</dd>
+        <dt>Find</dt><dd>Type in the <b>Find</b> box (or press <b>/</b>) to pick out items by title or category: matches stay bright and everything else fades. <b>Enter</b> scrolls to the first match; <b>Esc</b> clears it. Combine terms with <b>AND</b> and <b>OR</b> &#8212; <i>abc AND ghi</i> finds items containing both, <i>abc OR ghi</i> items containing either, and <b>AND</b> binds first, so <i>a AND b OR c</i> means <i>(a AND b) OR c</i>. They must be in capitals; type <i>and</i> in lower case to search for the word itself. A category whose name the search matches is outlined in the legend, the same way matching bars are.</dd>
+        <dt>Move an item</dt><dd>Drag its bar to another day and confirm (the prompt can be turned off in <b>&#9881; Settings</b>). The item moves by that many days and keeps its time of day and length. Press <b>Esc</b> while dragging to cancel. Repeating items and meetings have to be moved in Outlook.</dd>
         <dt>Delete an item</dt><dd>Right-click its bar &#8594; <b>Delete</b>. A recurring item offers <b>Delete this occurrence</b> or <b>Delete entire series</b> instead. Deleted items go to Outlook's Deleted Items. YearView asks you to confirm first; you can turn that off in <b>&#9881; Settings</b>.</dd>
         <dt>Right-click a day</dt><dd>Right-click a blank part of any day of the month &#8594; <b>Open Outlook calendar here</b>, which switches Outlook to that date in the calendar YearView is showing.</dd>
         <dt>Filter categories</dt><dd>Click <b>&#9703; Filter</b> to choose which categories are shown. Hidden categories dim in the legend. The <b>Titles</b> column chooses which categories show item titles: untick one and its items become plain coloured bars, with the title still shown when you hover.</dd>
         <dt>New category</dt><dd>Click <b>+ New category&#8230;</b>, pick an existing Outlook category or type a name to create one, then click or drag days.</dd>
-        <dt>Change year</dt><dd>Use the &#8249; &#8250; buttons beside the title. Previously opened years come back instantly; a year never built before shows a short progress message while it is read.</dd>
+        <dt>Change year</dt><dd>Use the &#8249; &#8250; buttons beside the title, and <b>Today</b> to come back to the current year and show where today is. When the year starts at a month other than January, the arrows step through last year, this year from January, your chosen view, then next year. Previously opened years come back instantly; a year never built before shows a short progress message while it is read.</dd>
         <dt>Calendar</dt><dd><b>Calendar</b> lists your calendars (default store) and switches the whole view &#8212; including creation, deletion and live updates &#8212; to the one you pick. The choice persists across restarts.</dd>
-        <dt>Settings</dt><dd>Click <b>&#9881;</b> to change how YearView behaves: <b>Confirm before deleting</b>, on by default; <b>Print &#8212; fit to</b>, one page by default; <b>Print category legend</b>, on by default &#8212; turn it off to leave the row of categories off the printout; and <b>Year starts at</b>, January by default &#8212; set it to <b>Current month</b> or a named month and the view shows twelve months from there, running on into the following year. Other years always show January to December. Choices are remembered across restarts.</dd>
-        <dt>Refresh</dt><dd>The view updates itself a few seconds after calendar changes; <b>Refresh</b> forces it.</dd>
+        <dt>Settings</dt><dd>Click <b>&#9881;</b> to change how YearView behaves: <b>Week starts on</b> Sunday or Monday; <b>Show item counts in legend</b> and <b>Show second category as a stripe</b>, both off by default; <b>Show tentative items hatched</b>, on by default; <b>Page shading</b>, white by default &#8212; <b>Light</b>, <b>Medium</b> or <b>Darker grey</b> tint the page's white areas; <b>Confirm before deleting</b> and <b>Confirm before moving</b>, both on by default; <b>Print &#8212; fit to</b>, one page by default; <b>Print category legend</b>, on by default &#8212; turn it off to leave the row of categories off the printout; and <b>Current year starts at</b>, January by default &#8212; set it to <b>Current month</b> or a named month and the view shows twelve months from there, running on into the following year. Other years always show January to December. Choices are remembered across restarts.</dd>
+        <dt>Refresh</dt><dd>The view updates itself a few seconds after calendar changes; <b>Refresh</b> forces it. The line beside the year says how long the last update took: <b>Outlook read</b> is the time spent reading the calendar, <b>page data</b> the time spent turning it into this page. Hovering that line breaks both down.</dd>
+        <dt>Keyboard</dt><dd><b>&#8592;</b> <b>&#8594;</b> previous and next year &#183; <b>T</b> today &#183; <b>/</b> find &#183; <b>F</b> filter &#183; <b>P</b> print &#183; <b>Esc</b> closes panels and deselects.</dd>
         <dt>Zoom</dt><dd>Ctrl + and Ctrl - (or Ctrl + mouse wheel). F11 toggles full screen.</dd>
         <dt>Print</dt><dd>Scales what is on the page onto the number of sheets set by <b>Print &#8212; fit to</b> in <b>&#9881; Settings</b> &#8212; one page by default. Choose <b>As many as needed</b> to print at full size and let it run onto further sheets, which is usually what you want with continuous scrolling on. Turn off <b>Print category legend</b> in <b>&#9881; Settings</b> to print without the row of categories at the foot. Paper and orientation are chosen in the print dialog as usual. The page count assumes A4 landscape, since a page cannot ask the dialog what was chosen; on other paper, use the dialog's own <b>Scale</b> setting instead, or print to PDF and enlarge.</dd>
         <dt>Quit</dt><dd>Closes this window and stops YearView completely, including the part that keeps running when the window is closed. Restart from the YearView shortcut. Closing the window does the same thing a few seconds later.</dd>
@@ -893,11 +1019,11 @@ const YV = (() => {
     return laneEnds.length;
   }
 
-  function monthLayout(year, month /*0-11*/, events){
+  function monthLayout(year, month /*0-11*/, events, ws /* v3.6.0: 1 = week starts Monday */){
     const mStart = new Date(year, month, 1);
     const mEndExcl = new Date(year, month + 1, 1);
     const nDays = Math.round((mEndExcl - mStart)/DAY);
-    const offset = mStart.getDay();            // 0 = Sunday, matches column 0
+    const offset = (mStart.getDay() - (ws === 1 ? 1 : 0) + 7) % 7;   // column of the 1st; at most 6, so 6 + 31 = 37 columns always suffice
     const clipped = [];
     for (const ev of events){
       const c = clipToMonth(ev, mStart, mEndExcl);
@@ -941,10 +1067,55 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
   const TOK = "__TOKEN__";        // per-session token, sent as the X-YV-Token header on every bridge call (empty in static snapshots)
   const HIDE_SEED = __HIDE__;
   const CONFIRM_DELETE = __CONFIRMDEL__;
+  const CONFIRM_MOVE = __CONFIRMMOVE__;     // v3.6.4: ask before moving a dragged item
   const SCROLL_YEARS = __SCROLLYEARS__;     // v2.0.8: server substitutes a COMPLETE JSON string literal (safe for any category content)
   const PRINT_PAGES = __PRINTPAGES__;       // v3.2.0: sheets to scale a print onto; 0 = as many as it takes
   const PRINT_LEGEND = __PRINTLEGEND__;     // v3.4.8: false = leave the category legend off the printout
   let printLegend = PRINT_LEGEND;           // v3.4.8: state directly beneath its literal
+  const SHADE = __SHADE__;                  // v3.5.0: page shading, 0 = white ... 3 = darker grey
+  // v3.5.0: state directly beneath its literal, applied before the first
+  // render so a shaded page never flashes white first.
+  let shade = (SHADE >= 0 && SHADE <= 3) ? SHADE : 0;
+  function applyShade(){ document.documentElement.dataset.shade = String(shade); }
+  applyShade();
+  const WEEK_START = __WEEKSTART__;         // v3.6.0: 0 = week starts Sunday, 1 = Monday
+  const LEGEND_COUNTS = __LEGENDCOUNTS__;   // v3.6.0: item counts in the legend
+  const CAT_STRIPE = __CATSTRIPE__;         // v3.6.0: second category drawn as a stripe
+  // v3.6.0: state directly beneath the literals and above the first render,
+  // with the two things every bar build touches: the bar -> event map the
+  // hover card and Find read, and the current Find text.
+  let weekStart = WEEK_START === 1 ? 1 : 0;
+  let legendCounts = LEGEND_COUNTS === true;
+  let catStripe = CAT_STRIPE === true;
+  const SHOW_TENTATIVE = __SHOWTENTATIVE__; // v3.6.5: false = tentative items drawn like any other
+  let showTentative = SHOW_TENTATIVE !== false;
+  const barEv = new WeakMap();
+  let findQ = "";
+  // v3.6.12: AND / OR in the Find box. `findQ` stays the raw trimmed query,
+  // because several places test it for emptiness; `findTerms` is the parsed
+  // form - an OR of ANDs, so "a AND b OR c" means (a AND b) OR c, the usual
+  // precedence.
+  //
+  // The operators are recognised ONLY in capitals and only as whole words
+  // surrounded by spaces. Lower-case "and" is far too common in a subject
+  // line ("Bob and Alice") to take as an operator, and it is also the escape
+  // hatch: type it in lower case to search for the word itself. A trailing
+  // "AND" with nothing after it yet is not an operator either, so a query
+  // does not misbehave while it is still being typed.
+  let findTerms = null;
+  function parseFind(rawQ){
+    const s = String(rawQ == null ? "" : rawQ).trim();
+    if (!s) return null;
+    const groups = s.split(/\s+OR\s+/)
+      .map(g => g.split(/\s+AND\s+/).map(x => x.trim().toLowerCase()).filter(Boolean))
+      .filter(g => g.length);
+    return groups.length ? groups : null;
+  }
+  const findMatch = ev => {
+    if (!findTerms) return false;
+    const hay = (String(ev.t || "") + "\n" + String(ev.cat || "")).toLowerCase();
+    return findTerms.some(g => g.every(term => hay.indexOf(term) >= 0));
+  };
   const NO_TITLES = __NOTITLES__;           // v3.4.7: csv of categories drawn without titles
   // v3.4.7: state directly beneath its literal and above the first render.
   // Category KEYS, with "" for (No category), exactly as the filter's hidden
@@ -963,11 +1134,24 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
   // year, which is what was asked for and also what keeps the arithmetic
   // simple: at most two years are ever in view.
   let startMonthPref = START_MONTH;
-  function resolveStartMonth(){
+  // v3.6.6: the current year can also be shown WHOLE, January to December,
+  // while the setting says otherwise - that is where the back arrow goes from
+  // the split view, so the years read in order:
+  //     last year | this year, whole | the split view | next year
+  // `wholeView` is this page's state; `carryWhole` is what the NEXT
+  // navigation should ask for (it travels as &whole=1). Declared here, above
+  // the first render, because resolveStartMonth() reads it.
+  let wholeView = false;
+  try { wholeView = new URLSearchParams(location.search).get("whole") === "1"; } catch(_){}
+  let carryWhole = wholeView;
+  function splitMonth(){                  // what the SETTING asks for on this page
     const now = new Date();
     if (YEAR !== now.getFullYear()) return 0;
     if (startMonthPref === -1) return now.getMonth();
     return (startMonthPref > 0 && startMonthPref <= 11) ? startMonthPref : 0;
+  }
+  function resolveStartMonth(){
+    return wholeView ? 0 : splitMonth();
   }
   let startMonth = resolveStartMonth();
   // v3.4.2: the spill year, if the page was built carrying it. Seeded BEFORE
@@ -1041,8 +1225,13 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
     "Generated " + new Date(data.generated || Date.now()).toLocaleString() +
     (data.source ? " \u00B7 " + data.source : "") + " \u00B7 " + data.events.length + " items" +
     (perf ? " \u00B7 Outlook read " + secs(perf.catMs + perf.setupMs + perf.enumMs + perf.baselineMs) : "") +
+    // v3.6.7: what the read is followed by. Absent from pages built before
+    // 3.6.7, and -1 when the fallback serialiser ran, so both are omitted
+    // rather than shown as zero.
+    (perf && perf.prepMs >= 0 && perf.serMs >= 0
+      ? " \u00B7 page data " + secs(perf.prepMs + perf.serMs) : "") +
     (data.truncated ? " \u00B7 \u26A0 truncated at 8000 items" : "") +
-    " \u00B7 YearView version 3.4.9";
+    " \u00B7 YearView version 3.6.13";
   if (perf) stampEl.title =
     "reader: " + (perf.reader || "classic") +
     " \u00B7 categories " + secs(perf.catMs) + " \u00B7 restrict " + secs(perf.setupMs) +
@@ -1055,16 +1244,26 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
         ", object model " + perf.omN + " in " + secs(perf.omMs)
       : "") +
     " \u00B7 baseline sort " + secs(perf.baselineMs) +
-    (perf.validateMs ? " \u00B7 first-build validation +" + secs(perf.validateMs) + " (once per session)" : "");
+    (perf.prepMs >= 0 ? " \u00B7 mapping and hash " + secs(perf.prepMs) : "") +
+    (perf.serMs >= 0 ? " \u00B7 serialising " + secs(perf.serMs)
+                     : (perf.serMs === -1 ? " \u00B7 serialising not measured on this path" : "")) +
+    (perf.validateMs ? " \u00B7 first-build validation +" + secs(perf.validateMs) +
+      " (once, then remembered until the reader changes)" : "");
 
   // weekday header
   const head = document.getElementById("dowhead");
-  head.insertAdjacentHTML("beforeend", '<div class="cell corner"></div>');
-  for (let c = 0; c < COLS; c++){
-    const d = c % 7;
-    head.insertAdjacentHTML("beforeend",
-      `<div class="cell${(d===0||d===6)?" we":""}">${DOW[d]}</div>`);
+  // v3.6.0: a function, because the week can now start on Monday and the
+  // setting takes effect live.
+  function buildDowHead(){
+    let h = '<div class="cell corner"></div>';
+    for (let c = 0; c < COLS; c++){
+      const d = (c + weekStart) % 7;
+      h += `<div class="cell${(d===0||d===6)?" we":""}">${DOW[d]}</div>`;
+    }
+    head.innerHTML = h;
   }
+  buildDowHead();
+  function applyWeekStart(){ buildDowHead(); renderMonths(); }
 
   function luma(hex){
     const h = hex.replace("#",""); const r=parseInt(h.substr(0,2),16),
@@ -1160,7 +1359,7 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
   // sequence of year-and-month pairs, which is what a view starting later
   // than January needs - it necessarily crosses into the following year.
   function buildMonthRow(Y, m, visible){
-      const L = YV.monthLayout(Y, m, visible);
+      const L = YV.monthLayout(Y, m, visible, weekStart);
     const rows = 1 + Math.max(L.lanes, 1);          // row 1 = day numbers, then lanes
     const mo = document.createElement("div");
     mo.className = "month";
@@ -1177,7 +1376,7 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
     for (let c = 0; c < COLS; c++){
       const dayN = c - L.offset + 1;
       const inMonth = dayN >= 1 && dayN <= L.nDays;
-      const dow = c % 7;
+      const dow = (c + weekStart) % 7;
       const div = document.createElement("div");
       div.className = "day" + ((dow===0||dow===6) ? " we" : "") + (inMonth ? " in" : " out");
       if (inMonth){
@@ -1203,23 +1402,38 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
     // event bars
     for (const ev of L.events){
       const bar = document.createElement("div");
+      const layers = [];                 // v3.6.0: background layers, top first
+      let darkBar = false;
       if (!catKey(ev)){
         // "(No category)": hollow bar, no colour fill (keyed on the category
         // string, not the colour - grey #bfbfbf is also a real palette colour)
         bar.className = "bar nocat";
       } else {
         const col = safeCol(ev.col);
-        bar.className = "bar " + (luma(col) < 140 ? "dark" : "light");
-        bar.style.background = col;
+        darkBar = luma(col) < 140;
+        bar.className = "bar " + (darkBar ? "dark" : "light");
+        bar.style.backgroundColor = col;
+        // v3.6.0: optional stripe in the SECOND category's colour along the
+        // foot of the bar. c2 passes the same hex check as every colour.
+        if (catStripe && ev.c2 && safeCol(ev.c2).toLowerCase() !== col.toLowerCase())
+          layers.push("linear-gradient(to top," + safeCol(ev.c2) + " 0 3px,transparent 3px)");
       }
+      // v3.6.0: tentative items (invitations not yet accepted) are hatched.
+      if (ev.tn && showTentative){
+        bar.classList.add("tent");
+        const ink = darkBar ? "rgba(255,255,255,.42)" : "rgba(0,0,0,.16)";
+        layers.push("repeating-linear-gradient(135deg," + ink + " 0 3px,transparent 3px 7px)");
+      }
+      if (layers.length) bar.style.backgroundImage = layers.join(",");
+      barEv.set(bar, ev);
+      if (findQ && findMatch(ev)) bar.classList.add("hit");
       bar.style.gridColumn = (L.offset + ev.d0 + 1) + " / " + (L.offset + ev.d1 + 2);
       bar.style.gridRow = (ev.lane + 2);
       // v3.4.7: titles per category. The text stays IN the bar - opening and
       // deleting an item both read it - and only its ink is removed.
       if (noTitles.has(catKey(ev))) bar.classList.add("notitle");
-      const when = ev.ad ? "All day" :
-        new Date(ev.s).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
-      bar.title = `${ev.t}\n${when}${ev.cat ? "\n" + ev.cat : ""}\n(click to open in Outlook)`;
+      // v3.6.0: no title attribute - the hover card (below) shows the detail,
+      // and the browser's own tooltip would appear on top of it.
       if (ev.id) bar.dataset.id = ev.id;
       if (ev.r) bar.dataset.rec = "1";
       bar.dataset.start = ev.s;
@@ -1273,9 +1487,84 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
     const visible = visibleEvents();
     if (startMonth > 0){
       monthsEl.appendChild(buildSpanBlock(YEAR, startMonth, visible));
+      postRender();
       return;
     }
-    for (const Y of yearsAsc()) monthsEl.appendChild(buildYearBlock(Y, visible));
+    // v3.6.6: every loaded year only in the (dormant) continuous mode. A
+    // single-year page may also HOLD the following year for the split view,
+    // and showing the year whole must not draw that one as well.
+    for (const Y of (continuous ? yearsAsc() : [YEAR])) monthsEl.appendChild(buildYearBlock(Y, visible));
+    postRender();
+  }
+  // v3.6.0: what has to follow EVERY full render. Both parts look elements up
+  // by id rather than through later-declared constants, because the first
+  // render runs before the legend and the Find box are set up.
+  function postRender(){
+    monthsEl.classList.toggle("finding", !!findQ);
+    updateFindCount();
+    updateLegendCounts();
+    updateLegendHits();
+  }
+  // v3.6.13: show WHICH category a search matched. Find has always looked at
+  // the category as well as the title, but nothing said so - a search for a
+  // category name lit the right bars and left the reader to guess whether it
+  // had matched the category or a coincidence in some titles.
+  //
+  // A chip is marked when the query would match an item whose only searchable
+  // text is that category name - the same rule the bars use, applied to the
+  // name alone. So "work" marks Work, while "travel AND work" marks neither,
+  // because no single category satisfies it, even though bars do. That is the
+  // honest answer rather than the flattering one.
+  //
+  // The legend element is fetched here rather than closed over: `legend` is
+  // declared further down and postRender runs before that line is reached.
+  function updateLegendHits(){
+    const lg = document.getElementById("legend");
+    if (!lg) return;
+    lg.querySelectorAll(".item").forEach(c => {
+      const name = c.dataset.cat;
+      // undefined = one of the legend's buttons, "" = "(No category)", whose
+      // items carry no category text and so can never match a term
+      if (name === undefined || name === ""){ c.classList.remove("hit"); return; }
+      const n = name.toLowerCase();
+      c.classList.toggle("hit",
+        !!(findTerms && findTerms.some(g => g.every(term => n.indexOf(term) >= 0))));
+    });
+  }
+  function updateFindCount(){
+    const el = document.getElementById("findN");
+    if (!el) return;
+    if (!findQ){ el.textContent = ""; return; }
+    const seen = new Set();
+    monthsEl.querySelectorAll(".bar.hit").forEach(b => {
+      const ev = barEv.get(b);
+      if (ev) seen.add(ev.id + "\u001f" + ev.s + "\u001f" + ev.e);
+    });
+    el.textContent = seen.size ? seen.size + " found" : "none found";
+  }
+  // Counts are of items in the twelve months on screen, whether or not their
+  // category is currently filtered out - the legend dims those, it does not
+  // pretend they are not there.
+  function updateLegendCounts(){
+    const lg = document.getElementById("legend");
+    if (!lg) return;
+    lg.querySelectorAll(".cnt").forEach(x => x.remove());
+    if (!legendCounts) return;
+    const a = new Date(YEAR, startMonth, 1), b = new Date(YEAR, startMonth + 12, 1);
+    const n = new Map();
+    for (const ev of allEvents){
+      const s = new Date(ev.s), e = new Date(ev.e);
+      if (!(s < b && e >= a)) continue;
+      const k = catKey(ev);
+      n.set(k, (n.get(k) || 0) + 1);
+    }
+    lg.querySelectorAll(".item").forEach(c => {
+      if (c.dataset.cat === undefined) return;
+      const sp = document.createElement("span");
+      sp.className = "cnt";
+      sp.textContent = String(n.get(c.dataset.cat) || 0);
+      c.appendChild(sp);
+    });
   }
   {
     // time the initial render and append it to the perf tooltip, so client-side
@@ -1332,6 +1621,7 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
   legend.appendChild(newCatChip);
   legend.insertAdjacentHTML("beforeend",
     '<span class="hint">Click a category, then click or drag across days to create an item \u00B7 click a bar to open it \u00B7 right-click a bar to delete</span>');
+  updateLegendCounts();
 
   /* ---------- new-item creation ---------- */
   const SERVED = location.protocol === "http:" || location.protocol === "https:";
@@ -1594,7 +1884,18 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
     // scroll to it rather than rebuilding and navigating. An unloaded year
     // still goes the long way round.
     const stepTo = d => {
+      const cy = new Date().getFullYear();
+      // v3.6.6: on this year's page with a split setting, the arrows walk
+      //   last year | this year, whole | the split view | next year
+      // and the two middle steps need no navigation at all.
+      if (!continuous && YEAR === cy && splitMonth() > 0){
+        if (!wholeView && d === -1){ setWhole(true); return; }
+        if (wholeView && d === 1){ setWhole(false); return; }
+      }
       const y = focusYear + d;
+      // Arriving at this year from the year before lands on the whole year;
+      // from the year after, on the split view.
+      carryWhole = (y === cy && d === 1);
       if (continuous && years.has(y)){
         const yb = [...monthsEl.querySelectorAll(".yearblock")].find(x => +x.dataset.year === y);
         if (yb){ yb.scrollIntoView({ behavior: "smooth", block: "start" }); return; }
@@ -1648,11 +1949,12 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
 
   /* ---- settings ---- */
   let confirmDelete = CONFIRM_DELETE;
+  let confirmMove   = CONFIRM_MOVE;
   let scrollYears   = SCROLL_YEARS;
   let printPages    = PRINT_PAGES;
   // v3.0.0: one table, so adding a setting is an entry rather than another
   // copy of the open/change/revert logic.
-  // v3.4.4: the ORDER here is the order the panel shows. "Year starts at"
+  // v3.4.4: the ORDER here is the order the panel shows. "Current year starts at"
   // leads because it is the one that changes what you are looking at; the
   // other two change what happens later.
   const SETTINGS = [
@@ -1660,14 +1962,33 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
     // the named months are fixed. Changing it takes effect at once - no
     // reload - which is why the value is resolved through a function rather
     // than captured once.
-    { id: "setStartMonth",  key: "startmonth",    label: "Year starts at", type: "select",
+    { id: "setStartMonth",  key: "startmonth",    label: "Current year starts at", type: "select",
       options: [[0, "January (whole year)"], [-1, "Current month"],
                 [1, "February"], [2, "March"],     [3, "April"],    [4, "May"],
                 [5, "June"],     [6, "July"],      [7, "August"],   [8, "September"],
                 [9, "October"],  [10, "November"], [11, "December"]],
-      get: () => startMonthPref, set: v => { startMonthPref = v; applyStartMonth(); } },
+      get: () => startMonthPref, set: v => { startMonthPref = v; setWhole(false); } },
+    // v3.5.0: second, because it too changes what is on screen. Live - a
+    // variable swap on <html>, no rebuild.
+    // v3.6.0: with the others that change what is on screen.
+    { id: "setWeekStart",   key: "weekstart",     label: "Week starts on", type: "select",
+      options: [[0, "Sunday"], [1, "Monday"]],
+      get: () => weekStart,     set: v => { weekStart = (v === 1 ? 1 : 0); applyWeekStart(); } },
+    { id: "setShade",       key: "shade",         label: "Page shading", type: "select",
+      options: [[0, "White"], [1, "Light grey"], [2, "Medium grey"], [3, "Darker grey"]],
+      get: () => shade,         set: v => { shade = v; applyShade(); } },
+    { id: "setLegendCounts", key: "legendcounts", label: "Show item counts in legend",
+      get: () => legendCounts,  set: v => { legendCounts = v; updateLegendCounts(); syncPinned(); } },
+    { id: "setCatStripe",   key: "catstripe",     label: "Show second category as a stripe",
+      get: () => catStripe,     set: v => { catStripe = v; renderMonths(); } },
+    // v3.6.5: on by default. Off draws tentative items like any other; the
+    // hover card still says "Tentative".
+    { id: "setShowTentative", key: "showtentative", label: "Show tentative items hatched",
+      get: () => showTentative, set: v => { showTentative = v; renderMonths(); } },
     { id: "setConfirmDel",  key: "confirmdelete", label: "Confirm before deleting",
       get: () => confirmDelete, set: v => { confirmDelete = v; } },
+    { id: "setConfirmMove", key: "confirmmove",   label: "Confirm before moving",
+      get: () => confirmMove,   set: v => { confirmMove = v; } },
     // v3.3.6: the continuous-scrolling entry is REMOVED FROM THE PANEL, not
     // from the application. Every mechanism it drove is still here and still
     // works - the year blocks, the neighbour loading, the scroll anchoring,
@@ -1754,6 +2075,7 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
     if (armed !== null) s += "&arm=" + encodeURIComponent(armed === "" ? "__none__" : armed);
     if (hidden.size) s += "&hide=" + encodeURIComponent(
       [...hidden].map(k => k === "" ? "__none__" : k).join(","));
+    if (carryWhole) s += "&whole=1";             // v3.6.6
     return s;
   }
   function syncFilterUI(){
@@ -2068,8 +2390,121 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
   monthsEl2.addEventListener("click", e => {
     const bar = e.target.closest(".bar");
     if (!bar) return;
+    if (mvJustDragged) return;        // v3.6.1: the release of a drag is not a click
     openItem(bar.dataset.id, bar.dataset.start, bar.textContent);
   });
+
+  /* ---- v3.6.1: drag a bar to another day to MOVE the item ----
+     A press on a bar becomes a drag only after the pointer has travelled a
+     few pixels, so an ordinary click still opens the item. The day under the
+     pointer when the bar was grabbed is the reference: dropping N days from
+     there moves the item N days, wherever along a long bar it was held.
+     Nothing is sent until the reader confirms, and the server refuses
+     repeating items, meetings and anything changed since the page was built. */
+  let mv = null, mvJustDragged = false;
+  const dayMs = 86400000;
+  const isoDate = d => isoOf(d.getFullYear(), d.getMonth(), d.getDate());
+  const parseIso = s => { const p = s.split("-").map(Number); return new Date(p[0], p[1] - 1, p[2]); };
+  function mvClear(){
+    monthsEl2.querySelectorAll(".day.mvsel").forEach(x => x.classList.remove("mvsel"));
+    monthsEl2.querySelectorAll(".bar.mvsrc").forEach(x => x.classList.remove("mvsrc"));
+    document.body.classList.remove("moving");
+  }
+  function mvDelta(m){
+    return (m.from && m.to) ? Math.round((parseIso(m.to) - parseIso(m.from)) / dayMs) : 0;
+  }
+  function mvPaint(){
+    monthsEl2.querySelectorAll(".day.mvsel").forEach(x => x.classList.remove("mvsel"));
+    if (!mv || !mv.active || !mv.to) return;
+    const d = mvDelta(mv);
+    const s = new Date(mv.ev.s), e = new Date(mv.ev.e);
+    const sd = new Date(s.getFullYear(), s.getMonth(), s.getDate());
+    let ed = new Date(e.getFullYear(), e.getMonth(), e.getDate());
+    // an end at exactly midnight belongs to the day before (all-day items always do)
+    if (ed > sd && e.getTime() === ed.getTime()) ed = new Date(ed.getFullYear(), ed.getMonth(), ed.getDate() - 1);
+    const lo = isoDate(new Date(sd.getFullYear(), sd.getMonth(), sd.getDate() + d));
+    const hi = isoDate(new Date(ed.getFullYear(), ed.getMonth(), ed.getDate() + d));
+    monthsEl2.querySelectorAll(".day.in").forEach(c => {
+      if (c.dataset.date >= lo && c.dataset.date <= hi) c.classList.add("mvsel");
+    });
+  }
+  monthsEl2.addEventListener("dragstart", e => e.preventDefault());   // never the browser's native drag
+  monthsEl2.addEventListener("mousedown", e => {
+    if (e.button !== 0 || !SERVED || leaving) return;
+    const bar = e.target.closest(".bar");
+    const ev = bar ? barEv.get(bar) : null;
+    if (!ev || !ev.id) return;
+    mv = { bar: bar, ev: ev, x0: e.clientX, y0: e.clientY, from: dateAt(bar, e.clientX), to: null, active: false };
+  });
+  document.addEventListener("mousemove", e => {
+    if (!mv) return;
+    if (!mv.active){
+      if (Math.abs(e.clientX - mv.x0) < 6 && Math.abs(e.clientY - mv.y0) < 6) return;
+      if (!mv.from){ mv = null; return; }
+      if (mv.ev.r){
+        mv = null;
+        toast("Repeating items can\u2019t be moved by dragging \u2014 open the item in Outlook");
+        return;
+      }
+      mv.active = true;
+      document.body.classList.add("moving");
+      mv.bar.classList.add("mvsrc");
+    }
+    e.preventDefault();
+    const to = dateAt(document.elementFromPoint(e.clientX, e.clientY), e.clientX);
+    if (to !== mv.to){ mv.to = to; mvPaint(); }
+  });
+  document.addEventListener("mouseup", () => {
+    if (!mv) return;
+    const m = mv; mv = null;
+    if (!m.active) return;                       // a plain click: the click handler opens the item
+    mvClear();
+    mvJustDragged = true; setTimeout(() => { mvJustDragged = false; }, 0);
+    const d = mvDelta(m);
+    if (d !== 0) moveItem(m.ev, d);
+  });
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && mv){ mv = null; mvClear(); }
+  });
+  window.addEventListener("blur", () => { if (mv){ mv = null; mvClear(); } });
+  async function moveItem(ev, delta){
+    const label = ev.t || "(No title)";
+    const s = new Date(ev.s);
+    const n = new Date(s.getFullYear(), s.getMonth(), s.getDate() + delta);
+    const f = d => d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+    // v3.6.4: the prompt is a setting, on by default, like the delete one.
+    if (confirmMove &&
+        !await yvConfirm("Move \u201C" + label + "\u201D?\n\nFrom  " + f(s) + "\nTo  " + f(n) +
+                         "\n\nThe time of day and the length stay the same.", "Move")) return;
+    try{
+      const j = await apiWaitBusy("/move?id=" + encodeURIComponent(ev.id) + "&start=" + encodeURIComponent(ev.s) +
+        "&days=" + delta, "Waiting for the update to finish \u2014 will move \u201C" + label + "\u201D\u2026");
+      if (j === null) return;
+      if (j.ok){
+        toast("Moved \u201C" + label + "\u201D to " + f(n) + " \u2014 updating\u2026", 0);
+        // v3.6.3: rebuild AT ONCE, not 700 ms later. The server now waits
+        // for the move to show before it replies, so the delay bought
+        // nothing - and it left a gap in which the change poll could notice
+        // our own edit and start a background update. The rebuild then
+        // arrived mid-build, was told "busy", navigated, and met an empty
+        // page cache: the occasional full "loading" screen after a move.
+        // Calling rebuild() here sets `rebuilding` before any poll reply can
+        // be handled, and the poll stands down while that is set. If a
+        // background update is ALREADY running, wait for it first.
+        let waits = 0;
+        const go = () => {
+          if (leaving) return;
+          if (bgUpdating && waits++ < 80){ setTimeout(go, 250); return; }
+          rebuild();
+        };
+        go();
+      } else {
+        toast("Not moved: " + (j.err || "Outlook error"), 7000);
+      }
+    } catch(err){
+      if (!leaving) toast("YearView is not responding \u2014 restart YearView");
+    }
+  }
   // v2.0.10: item actions issued while the bridge is mid-build (the
   // "Outlook calendar changed" window) received the quick-serve's
   // {"ok":false,"busy":true} and surfaced as "Outlook error: unknown". The
@@ -2210,11 +2645,14 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
       '</div>' +
     '</div>';
   document.body.appendChild(askov);
-  function yvConfirm(msg){
+  function yvConfirm(msg, yesLabel){
     return new Promise(resolve => {
       askov.querySelector("#askmsg").textContent = msg;
       askov.classList.add("show");
       const yes = askov.querySelector("#askYes");
+      // v3.6.1: the same dialog confirms a move; only a delete is styled as dangerous.
+      yes.textContent = yesLabel || "Delete";
+      yes.classList.toggle("danger", !yesLabel);
       const no  = askov.querySelector("#askNo");
       const done = answer => {
         askov.classList.remove("show");
@@ -2254,7 +2692,24 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
       if (j === null) return;
       if (j.ok){
         toast("Deleted \u201C" + label + "\u201D \u2014 updating\u2026", 0);
-        setTimeout(rebuild, 700);
+        // v3.6.9: rebuild AT ONCE, exactly as the move path has since v3.6.3.
+        // This was the same fault, left behind when that one was fixed: the
+        // server already waits for the deletion to be visible before it
+        // replies, so the 700 ms bought nothing - and it left a gap in which
+        // the change poll could notice OUR OWN deletion and start a
+        // background update. The rebuild then arrived mid-build, was told
+        // "busy", navigated, and met an empty page cache: the occasional
+        // full "loading" screen after a delete. Calling rebuild() here sets
+        // `rebuilding` before any poll reply can be handled, and the poll
+        // stands down while that is set. If a background update is ALREADY
+        // running, wait for it to finish first.
+        let waits = 0;
+        const go = () => {
+          if (leaving) return;
+          if (bgUpdating && waits++ < 80){ setTimeout(go, 250); return; }
+          rebuild();
+        };
+        go();
       } else {
         toast("Outlook error: " + (j.err || "unknown"));
       }
@@ -2407,7 +2862,7 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
         x => x.dataset.cat && catsCmp({ name: x.dataset.cat }, c) > 0);
       legend.insertBefore(chip, after || noneChip);
     }
-    if (added){ buildFilterPanel(); syncFilterUI(); syncPinned(); }
+    if (added){ updateLegendCounts(); buildFilterPanel(); syncFilterUI(); syncPinned(); }
   }
 
   // An appointment spanning New Year is in BOTH adjacent years' payloads -
@@ -2672,6 +3127,16 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
       if (!leaving) toast("Could not load " + y);
     });
   }
+  function setWhole(v){
+    wholeView = carryWhole = !!v;
+    try {
+      const uq = new URLSearchParams(location.search);
+      if (wholeView) uq.set("whole", "1"); else uq.delete("whole");
+      const qs = uq.toString();
+      history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
+    } catch(_){}
+    applyStartMonth();
+  }
   function applyStartMonth(){
     startMonth = resolveStartMonth();
     updateHeading();
@@ -2680,6 +3145,148 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
     scrollTo(0, 0);
   }
   updateHeading();
+
+  /* ---- v3.6.0: Today, keyboard shortcuts, Find, hover card ---- */
+  const todayBtn = document.getElementById("todayBtn");
+  function goToday(){
+    const now = new Date();
+    if (YEAR !== now.getFullYear()){
+      carryWhole = false;                        // v3.6.6: Today is the view the setting asks for
+      if (SERVED) goYear(now.getFullYear(), "Loading " + now.getFullYear() + "\u2026");
+      return;
+    }
+    if (wholeView && splitMonth() > 0) setWhole(false);
+    const iso = now.getFullYear() + "-" + String(now.getMonth()+1).padStart(2,"0") + "-" +
+                String(now.getDate()).padStart(2,"0");
+    const cell = document.querySelector('.day[data-date="' + iso + '"]');
+    if (!cell) return;
+    cell.scrollIntoView({ behavior: "smooth", block: "center" });
+    const ov = cell.parentElement.querySelector(".todayov");
+    if (ov){ ov.classList.remove("pulse"); void ov.offsetWidth; ov.classList.add("pulse"); }
+  }
+  todayBtn.onclick = goToday;
+  if (!SERVED && YEAR !== new Date().getFullYear()) todayBtn.style.display = "none";
+
+  const findBox = document.getElementById("findBox");
+  function applyFind(){
+    // v3.6.12: parse the raw value - the operators are case-sensitive, so the
+    // parse has to happen before anything is lower-cased.
+    findTerms = parseFind(findBox.value);
+    findQ = findBox.value.trim().toLowerCase();
+    monthsEl.querySelectorAll(".bar").forEach(b => {
+      const ev = barEv.get(b);
+      b.classList.toggle("hit", !!(findQ && ev && findMatch(ev)));
+    });
+    postRender();
+  }
+  findBox.addEventListener("input", applyFind);
+  findBox.addEventListener("keydown", e => {
+    if (e.key === "Escape"){ findBox.value = ""; applyFind(); findBox.blur(); e.stopPropagation(); }
+    else if (e.key === "Enter"){
+      const first = monthsEl.querySelector(".bar.hit");
+      if (first) first.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  });
+
+  // One handler, plain keys only: never with Ctrl/Alt/Meta (those belong to
+  // the browser), never while typing in a field, never under a dialog.
+  document.addEventListener("keydown", e => {
+    if (e.ctrlKey || e.altKey || e.metaKey || leaving) return;
+    const tg = e.target && e.target.tagName;
+    if (tg === "INPUT" || tg === "SELECT" || tg === "TEXTAREA") return;
+    if (document.querySelector(".helpov.show")) return;
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (k === "ArrowLeft"){ if (prevYr.style.display !== "none") prevYr.click(); }
+    else if (k === "ArrowRight"){ if (nextYr.style.display !== "none") nextYr.click(); }
+    else if (k === "t"){ goToday(); }
+    else if (k === "f"){
+      if (fpanel.style.display === "block") hideCtx(); else filterChip.click();
+    }
+    else if (k === "p"){ window.print(); }
+    else if (k === "/"){ findBox.focus(); findBox.select(); }
+    else return;
+    e.preventDefault();
+  });
+
+  const hcard = document.createElement("div");
+  hcard.className = "hcard";
+  document.body.appendChild(hcard);
+  let hTimer = null, hBar = null;
+  const hDay = (d, yr) => d.toLocaleDateString(undefined,
+    yr ? { weekday: "short", day: "numeric", month: "short", year: "numeric" }
+       : { weekday: "short", day: "numeric", month: "short" });
+  const hTime = d => d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  function hWhen(ev){
+    const s = new Date(ev.s), e = new Date(ev.e);
+    if (isNaN(s) || isNaN(e)) return "";
+    if (ev.ad){
+      // an all-day item ends at the midnight AFTER its last day
+      const last = new Date(e.getTime() - 86400000);
+      const n = Math.round((e - s) / 86400000);
+      if (n <= 1 || last <= s) return hDay(s, true) + " \u00B7 all day";
+      return hDay(s, s.getFullYear() !== last.getFullYear()) + " \u2013 " + hDay(last, true) +
+             " \u00B7 all day (" + n + " days)";
+    }
+    if (s.toDateString() === e.toDateString())
+      return hDay(s, true) + " \u00B7 " + hTime(s) + " \u2013 " + hTime(e);
+    return hDay(s, s.getFullYear() !== e.getFullYear()) + " " + hTime(s) + " \u2013 " +
+           hDay(e, true) + " " + hTime(e);
+  }
+  function hideCard(){
+    clearTimeout(hTimer); hTimer = null; hBar = null;
+    hcard.style.display = "none";
+  }
+  function showCard(bar){
+    const ev = barEv.get(bar);
+    if (!ev || leaving || !bar.isConnected) return;
+    hcard.textContent = "";
+    const add = (cls, text) => {
+      const d = document.createElement("div");
+      d.className = cls; d.textContent = text; hcard.appendChild(d); return d;
+    };
+    add("ht", ev.t || "(No title)");
+    add("hw", hWhen(ev));
+    const names = String(ev.cat || "").split(/[;,]/).map(x => x.trim()).filter(Boolean);
+    if (names.length){
+      const row = add("hc", "");
+      names.forEach((nm, i) => {
+        const known = cats.find(c => c.name === nm);
+        const col = i === 0 ? ev.col : (known ? known.col : (i === 1 ? ev.c2 : ""));
+        const sp = document.createElement("span");
+        const sw = document.createElement("i");
+        sw.style.background = col ? safeCol(col) : "#fff";
+        sp.appendChild(sw);
+        sp.appendChild(document.createTextNode(nm));
+        row.appendChild(sp);
+      });
+    }
+    const flags = [];
+    if (ev.tn) flags.push("Tentative");
+    if (ev.r) flags.push("Repeats");
+    if (flags.length) add("hf", flags.join(" \u00B7 "));
+    if (SERVED) add("hh", ev.r ? "Click to open \u00B7 right-click for more"
+                              : "Click to open \u00B7 drag to move \u00B7 right-click for more");
+    hcard.style.display = "block";
+    const r = bar.getBoundingClientRect(), w = hcard.offsetWidth, h = hcard.offsetHeight;
+    let top = r.bottom + 6;
+    if (top + h > innerHeight - 8) top = Math.max(8, r.top - h - 6);
+    hcard.style.left = Math.max(8, Math.min(r.left, innerWidth - w - 8)) + "px";
+    hcard.style.top = top + "px";
+  }
+  monthsEl.addEventListener("mouseover", e => {
+    const bar = e.target.closest ? e.target.closest(".bar") : null;
+    if (bar === hBar) return;
+    hideCard();
+    if (!bar || e.buttons) return;
+    hBar = bar;
+    hTimer = setTimeout(() => { if (hBar === bar) showCard(bar); }, 300);
+  });
+  monthsEl.addEventListener("mouseleave", hideCard);
+  document.addEventListener("mousedown", hideCard, true);
+  document.addEventListener("keydown", hideCard, true);
+  window.addEventListener("scroll", hideCard, true);
+  window.addEventListener("blur", hideCard);
+
   // The legend and the filter panel are built after the first render, so a
   // category belonging only to the spill year has to join them here rather
   // than at seed time - it would have been a dead-zone error up there.
@@ -2862,6 +3469,13 @@ function Read-YearClassic([object]$cal, [string]$filter) {
             $catStr = ''
             if ($catRaw) { $catStr = [string]$catRaw }
             $catStr = ((($catStr -split '[;,]') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join '; ')
+            # v3.6.0: tentative (olTentative = 1) - what an invitation not yet
+            # accepted shows as. One more cross-process call per item, in its
+            # OWN try so a refusal can never cost the item itself; skipped
+            # entirely when the Table half could not supply the same field,
+            # so the two halves of the reader always agree.
+            $tn = $false
+            if (-not $script:noBusy) { try { $tn = ([int]$it.BusyStatus -eq 1) } catch {} }
             $list.Add([pscustomobject]@{
                 s   = $it.Start.ToString('yyyy-MM-ddTHH:mm:ss', $script:invCulture)
                 e   = $it.End.ToString('yyyy-MM-ddTHH:mm:ss', $script:invCulture)
@@ -2870,6 +3484,7 @@ function Read-YearClassic([object]$cal, [string]$filter) {
                 cat = $catStr
                 id  = [string]$it.EntryID
                 r   = [bool]$it.IsRecurring
+                tn  = $tn
             })
             $n++
         } catch { Write-Verbose ("Skipped one item: {0}" -f $_.Exception.Message) }
@@ -2882,6 +3497,8 @@ function Read-YearFast([object]$cal, [string]$filter, [datetime]$rangeStart, [da
     $daslRec = 'http://schemas.microsoft.com/mapi/id/{00062002-0000-0000-C000-000000000046}/8223000B'
     $daslAll = 'http://schemas.microsoft.com/mapi/id/{00062002-0000-0000-C000-000000000046}/8215000B'
     $daslKw  = 'http://schemas.microsoft.com/mapi/string/{00020329-0000-0000-C000-000000000046}/Keywords'
+    # v3.6.0: PidLidBusyStatus (free 0, tentative 1, busy 2, out of office 3)
+    $daslBusy = 'http://schemas.microsoft.com/mapi/id/{00062002-0000-0000-C000-000000000046}/82050003'
     $list = New-Object System.Collections.Generic.List[object]
     $n = 0; $trunc = $false
     # v3.2.1: time the two halves SEPARATELY. "Fast reader, 11 seconds" says
@@ -2933,6 +3550,16 @@ function Read-YearFast([object]$cal, [string]$filter, [datetime]$rangeStart, [da
     [void]$tbl.Columns.Add($daslKw)      # 4
     [void]$tbl.Columns.Add('Subject')    # 5
     [void]$tbl.Columns.Add('EntryID')    # 6
+    # v3.6.0: an OPTIONAL eighth column. If this Outlook will not add it, the
+    # reader carries on with seven and tentative marking is switched off for
+    # the session ($script:noBusy) in BOTH halves and in the classic reader -
+    # the feature degrades, the fast path and its validation do not.
+    $NC = 7
+    try { [void]$tbl.Columns.Add($daslBusy); $NC = 8 }   # 7
+    catch {
+        $script:noBusy = $true
+        Write-Warning 'BusyStatus column unavailable - tentative items will not be marked.'
+    }
     # v3.2.4: fetch rows in BATCHES. The measurements settled what the cost
     # actually is: both halves of the reader land at about two and a half
     # milliseconds PER CROSS-PROCESS CALL on the slow machine, so the time is
@@ -2956,12 +3583,20 @@ function Read-YearFast([object]$cal, [string]$filter, [datetime]$rangeStart, [da
             # columns asked for. Bounds are read from the array itself because
             # a COM safe array is not obliged to start at zero.
             if ($arr -is [array] -and $arr.Rank -eq 2 -and
-                ($arr.GetUpperBound(1) - $arr.GetLowerBound(1) + 1) -eq 7) {
+                ($arr.GetUpperBound(1) - $arr.GetLowerBound(1) + 1) -eq $NC) {
                 $cLo = $arr.GetLowerBound(1)
                 for ($r = $arr.GetLowerBound(0); $r -le $arr.GetUpperBound(0); $r++) {
-                    [void]$batch.Add(@($arr[$r,$cLo],     $arr[$r,$cLo+1], $arr[$r,$cLo+2],
-                                       $arr[$r,$cLo+3],   $arr[$r,$cLo+4], $arr[$r,$cLo+5],
-                                       $arr[$r,$cLo+6]))
+                    # v3.6.0: the column index is PARENTHESISED. In PowerShell the
+                    # comma binds tighter than '+', so $arr[$r,$cLo+1] is
+                    # ($r,$cLo)+1 - a three-element index, which throws. As
+                    # written since v3.2.4 this line could never succeed: the
+                    # first batch threw, the caller caught it, and the session
+                    # fell back to the classic reader. Found by running this
+                    # function for the first time, against a mock Outlook.
+                    [void]$batch.Add(@($arr[$r,$cLo],       $arr[$r,($cLo+1)], $arr[$r,($cLo+2)],
+                                       $arr[$r,($cLo+3)],   $arr[$r,($cLo+4)], $arr[$r,($cLo+5)],
+                                       $arr[$r,($cLo+6)],
+                                       $(if ($NC -eq 8) { $arr[$r,($cLo+7)] } else { $null })))
                 }
                 $bulkRows += $batch.Count
                 $batchCalls++
@@ -2980,7 +3615,7 @@ function Read-YearFast([object]$cal, [string]$filter, [datetime]$rangeStart, [da
                 $bulkChecked = $true
                 try {
                     $probe = $row.GetValues()
-                    if ($probe -is [array] -and $probe.Count -eq 7) {
+                    if ($probe -is [array] -and $probe.Count -eq $NC) {
                         $bulkOk = (([string]$probe[5] -eq [string]$row.Item('Subject')) -and
                                    ([string]$probe[6] -eq [string]$row.Item('EntryID')))
                     }
@@ -2992,13 +3627,14 @@ function Read-YearFast([object]$cal, [string]$filter, [datetime]$rangeStart, [da
             $v = $null
             if ($bulkOk) {
                 try { $v = $row.GetValues() } catch { $v = $null }
-                if (-not ($v -is [array] -and $v.Count -eq 7)) { $v = $null }
+                if (-not ($v -is [array] -and $v.Count -eq $NC)) { $v = $null }
             }
             if ($v) { $bulkRows++ }
             else {
                 $v = @($row.Item($daslStart), $row.Item($daslEnd), $row.Item($daslRec),
                        $row.Item($daslAll),   $row.Item($daslKw), $row.Item('Subject'),
-                       $row.Item('EntryID'))
+                       $row.Item('EntryID'),
+                       $(if ($NC -eq 8) { $row.Item($daslBusy) } else { $null }))
             }
             [void]$batch.Add($v)
         }
@@ -3022,6 +3658,7 @@ function Read-YearFast([object]$cal, [string]$filter, [datetime]$rangeStart, [da
                 cat = $catStr
                 id  = [string]$v[6]
                 r   = $false
+                tn  = ($NC -eq 8 -and $v.Count -ge 8 -and $null -ne $v[7] -and ([string]$v[7]) -eq '1')
             })
             $n++
         }
@@ -3058,6 +3695,13 @@ function Read-YearFast([object]$cal, [string]$filter, [datetime]$rangeStart, [da
             $catStr = ''
             if ($catRaw) { $catStr = [string]$catRaw }
             $catStr = ((($catStr -split '[;,]') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join '; ')
+            # v3.6.0: tentative (olTentative = 1) - what an invitation not yet
+            # accepted shows as. One more cross-process call per item, in its
+            # OWN try so a refusal can never cost the item itself; skipped
+            # entirely when the Table half could not supply the same field,
+            # so the two halves of the reader always agree.
+            $tn = $false
+            if (-not $script:noBusy) { try { $tn = ([int]$it.BusyStatus -eq 1) } catch {} }
             $list.Add([pscustomobject]@{
                 s   = $it.Start.ToString('yyyy-MM-ddTHH:mm:ss', $inv)
                 e   = $it.End.ToString('yyyy-MM-ddTHH:mm:ss', $inv)
@@ -3066,6 +3710,7 @@ function Read-YearFast([object]$cal, [string]$filter, [datetime]$rangeStart, [da
                 cat = $catStr
                 id  = [string]$it.EntryID
                 r   = [bool]$it.IsRecurring
+                tn  = $tn
             })
             $n++
         } catch { Write-Verbose ("Skipped one item: {0}" -f $_.Exception.Message) }
@@ -3092,7 +3737,9 @@ function Compare-YearReads([object]$a, [object]$b) {
     # Returns the differing items (capped each way) so a mismatch verdict names
     # WHAT diverged, not just that something did.
     $us = [string][char]31
-    $key = { param($ev) @($ev.s, $ev.e, $ev.t, $ev.ad, $ev.cat, $ev.r) -join $us }
+    # v3.6.0: tentative joins the compared fields, so a Table value that
+    # disagreed with the object model would be caught like any other.
+    $key = { param($ev) @($ev.s, $ev.e, $ev.t, $ev.ad, $ev.cat, $ev.r, [bool]$ev.tn) -join $us }
     $ha = New-Object 'System.Collections.Generic.HashSet[string]'
     $hb = New-Object 'System.Collections.Generic.HashSet[string]'
     foreach ($ev in $a.Events) { [void]$ha.Add((& $key $ev)) }
@@ -3199,8 +3846,14 @@ function Get-YearData {
                 Write-Host ("Fast scan validated against classic reader: {0} ms vs {1} ms, {2} items identical (ids resolve)." -f `
                     $perfEnumMs, $classicMs, $read.Events.Count) -ForegroundColor Green
                 try {
-                    [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $PSCommandPath) 'yv-fastscan.ok'),
-                        ('{0}|{1}' -f $script:yvVersion, [string]$script:outlook.Version))
+                    # v3.6.11: keyed on the reader, as the restore above is. If
+                    # the signature cannot be computed no stamp is written, so
+                    # the next session validates again - the cautious outcome.
+                    $sig = Get-ReaderSignature
+                    if ($sig) {
+                        [IO.File]::WriteAllText((Join-Path (Split-Path -Parent $PSCommandPath) 'yv-fastscan.ok'),
+                            ('{0}|{1}' -f $sig, [string]$script:outlook.Version))
+                    }
                 } catch {}
             }
         } else {
@@ -3233,6 +3886,12 @@ function Get-YearData {
         $perfEnumMs = $tC2.ElapsedMilliseconds
     }
 
+    # v3.6.7: TIME what happens after the read. The per-phase numbers added in
+    # v3.2.1 cover the Outlook calls only, so everything between the last COM
+    # call and the finished payload has been invisible since - which is why a
+    # one-second "Outlook read" could sit under a two or three second
+    # "updating" message with nothing to account for the difference.
+    $swPrep = [Diagnostics.Stopwatch]::StartNew()
     # Post-pass (pure PowerShell, no COM): colour mapping and legend usage.
     # Uncategorised events are ALWAYS included in the data (since v1.20); their
     # visibility is governed by the client's "(No category)" filter entry.
@@ -3244,9 +3903,15 @@ function Get-YearData {
         $col = '#BFBFBF'
         if ($first -and $catMap.ContainsKey($first)) { $col = $catMap[$first] }
         if ($first) { $usedCats[$first] = $col }
+        # v3.6.0: the SECOND category's colour, for the optional stripe. Only
+        # when it is a real master-list category; '' otherwise.
+        $c2 = ''
+        $parts = @(($rv.cat -split '[;,]') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if ($parts.Count -ge 2 -and $catMap.ContainsKey($parts[1]) -and $catMap[$parts[1]]) { $c2 = [string]$catMap[$parts[1]] }
         $events.Add([pscustomobject]@{
             s = $rv.s; e = $rv.e; t = $rv.t; ad = $rv.ad
             cat = $rv.cat; col = $col; id = $rv.id; r = $rv.r
+            c2 = $c2; tn = [bool]$rv.tn
         })
     }
     # Order-independent CONTENT hash - generated timestamps and perf numbers
@@ -3256,13 +3921,15 @@ function Get-YearData {
     # stale page.
     $keys = New-Object System.Collections.Generic.List[string]
     $us = [string][char]31
-    foreach ($ev in $events) { $keys.Add((@($ev.id, $ev.s, $ev.e, $ev.t, $ev.ad, $ev.cat, $ev.col, $ev.r) -join $us)) }
+    foreach ($ev in $events) { $keys.Add((@($ev.id, $ev.s, $ev.e, $ev.t, $ev.ad, $ev.cat, $ev.col, $ev.r, $ev.c2, $ev.tn) -join $us)) }
     $keys.Sort([StringComparer]::Ordinal)
     $sha = [Security.Cryptography.SHA1]::Create()
     $contentHash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($keys -join "`n"))))
     $sha.Dispose()
     Write-Host ("{0} appointments found ({1} ms categories, {2} ms restrict, {3} ms enumerate, {4} ms baseline sort)." -f `
         $events.Count, $perfCatMs, $perfSetupMs, $perfEnumMs, $script:lastBaselineMs) -ForegroundColor Cyan
+    # v3.6.7: the console line is written BEFORE the legend and the payload are
+    # built, so it cannot name their cost; the page stamp does that instead.
 
     # Legend: master-list order, used categories only
     $legend = New-Object System.Collections.Generic.List[object]
@@ -3276,6 +3943,8 @@ function Get-YearData {
         $legend.Add([pscustomobject]@{ name = $k; col = $usedCats[$k] })
     }
 
+    $perfPrepMs = $swPrep.ElapsedMilliseconds
+    $swSer = [Diagnostics.Stopwatch]::StartNew()
     # Fast JSON (v1.2.3): ConvertTo-Json in Windows PowerShell 5.1 costs SECONDS
     # on a few thousand objects and dominated the build time. The payload's shape
     # is fixed and fully known, so it is serialised directly (StringBuilder +
@@ -3291,17 +3960,35 @@ function Get-YearData {
         [void]$sb.Append(',"source":').Append((ConvertTo-JsonStr ([string]$cal.FolderPath)))
         [void]$sb.Append(',"events":[')
         $sep = ''
+        # v3.6.8: three escaper calls per item was the single biggest cost in
+        # building the page - 1.0 s for 793 items on the desktop, as much as
+        # the whole Outlook read. A PowerShell function call is dear, and the
+        # one being called is dearer still (see ConvertTo-JsonStr). Calendar
+        # text almost never contains a character JSON must escape, so the scan
+        # is done inline and the function called only for the rare string that
+        # needs it. Output is byte-for-byte what it was; hostile text still
+        # goes through exactly the same escaper.
+        $escRx = $script:jsonEscRx
         foreach ($ev in $events) {
             [void]$sb.Append($sep); $sep = ','
+            $evT = [string]$ev.t; $evCat = [string]$ev.cat; $evId = [string]$ev.id
+            if ($escRx.IsMatch($evT))   { $evT   = ConvertTo-JsonStr $evT }   else { $evT   = '"' + $evT   + '"' }
+            if ($escRx.IsMatch($evCat)) { $evCat = ConvertTo-JsonStr $evCat } else { $evCat = '"' + $evCat + '"' }
+            if ($escRx.IsMatch($evId))  { $evId  = ConvertTo-JsonStr $evId }  else { $evId  = '"' + $evId  + '"' }
             # dates are our fixed invariant format and col is palette hex - no
             # escapable characters by construction; everything else is escaped
             [void]$sb.Append('{"s":"').Append($ev.s).Append('","e":"').Append($ev.e)
-            [void]$sb.Append('","t":').Append((ConvertTo-JsonStr $ev.t))
+            [void]$sb.Append('","t":').Append($evT)
             [void]$sb.Append(',"ad":').Append($(if ($ev.ad) {'true'} else {'false'}))
-            [void]$sb.Append(',"cat":').Append((ConvertTo-JsonStr $ev.cat))
+            [void]$sb.Append(',"cat":').Append($evCat)
             [void]$sb.Append(',"col":"').Append($ev.col)
-            [void]$sb.Append('","id":').Append((ConvertTo-JsonStr $ev.id))
-            [void]$sb.Append(',"r":').Append($(if ($ev.r) {'true'} else {'false'})).Append('}')
+            [void]$sb.Append('","id":').Append($evId)
+            [void]$sb.Append(',"r":').Append($(if ($ev.r) {'true'} else {'false'}))
+            # v3.6.0: only when present, to keep the payload small. c2 is
+            # palette hex by construction, like col.
+            if ($ev.c2) { [void]$sb.Append(',"c2":"').Append($ev.c2).Append('"') }
+            if ($ev.tn) { [void]$sb.Append(',"tn":true') }
+            [void]$sb.Append('}')
         }
         [void]$sb.Append('],"categories":[')
         $sep = ''
@@ -3310,6 +3997,10 @@ function Get-YearData {
             [void]$sb.Append('{"name":').Append((ConvertTo-JsonStr $c.name))
             [void]$sb.Append(',"col":"').Append($c.col).Append('"}')
         }
+        # v3.6.7: the perf block is appended AFTER the events and categories,
+        # so the cost of serialising them can be stated inside the payload that
+        # carries it. The few appends that follow are not worth measuring.
+        $perfSerMs = $swSer.ElapsedMilliseconds
         [void]$sb.Append('],"perf":{"reader":"').Append($(if ($script:fastScanOk) {'fast'} else {'classic'})).Append('"')
         [void]$sb.Append(',"catMs":').Append([string]$perfCatMs)
         [void]$sb.Append(',"setupMs":').Append([string]$perfSetupMs)
@@ -3322,6 +4013,13 @@ function Get-YearData {
         [void]$sb.Append(',"bulkN":').Append([string]$perfBulkN)
         [void]$sb.Append(',"batchN":').Append([string]$perfBatchN)
         [void]$sb.Append(',"baselineMs":').Append([string]$script:lastBaselineMs)
+        # v3.6.7: coerced, not interpolated raw. A number appended into the
+        # payload IS the payload's syntax: anything empty or non-numeric here
+        # makes the whole page unparseable and it renders blank. [long] turns
+        # an absent value into 0, so a timing that somehow went missing costs
+        # a wrong figure rather than the year.
+        [void]$sb.Append(',"prepMs":').Append([string][long]$perfPrepMs)
+        [void]$sb.Append(',"serMs":').Append([string][long]$perfSerMs)
         [void]$sb.Append(',"validateMs":').Append([string]$perfValidateMs).Append('}')
         [void]$sb.Append(',"truncated":').Append($(if ($truncated) {'true'} else {'false'}))
         [void]$sb.Append(',"uncatDefaultHidden":').Append($(if (-not $IncludeUncategorised) {'true'} else {'false'}))
@@ -3347,6 +4045,8 @@ function Get-YearData {
             perf       = [pscustomobject]@{ reader = $(if ($script:fastScanOk) {'fast'} else {'classic'})
                                             catMs = [long]$perfCatMs; setupMs = [long]$perfSetupMs
                                             enumMs = [long]$perfEnumMs; baselineMs = [long]$script:lastBaselineMs
+                                            prepMs = [long]$perfPrepMs
+                                            serMs = -1   # v3.6.7: this path builds perf BEFORE converting, so it cannot time itself
                                             validateMs = [long]$perfValidateMs }
             truncated  = [bool]$truncated   # R-4: shown in the page header; the console warning is invisible when hidden
             uncatDefaultHidden = [bool](-not $IncludeUncategorised)   # first-run filter default for "(No category)"
@@ -3387,10 +4087,16 @@ function Build-YearViewHtml {
     $hideSet = $(if ($null -ne $script:hiddenCsv) { 'true' } else { 'false' })
     $script:pageHideLits[$Y] = $hideLit   # v2.1.22: so /setfilter can re-stamp this page in place
     $confLit = $(if ($script:confirmDelete) { 'true' } else { 'false' })
+    $cmLit   = $(if ($script:confirmMove)   { 'true' } else { 'false' })
     $scrlLit = $(if ($script:scrollYears)   { 'true' } else { 'false' })
     $ntLit   = ConvertTo-SeedStr ([string]$script:noTitles)
     $prtLit  = [string][int]$script:printPages
     $plgLit  = $(if ($script:printLegend)   { 'true' } else { 'false' })
+    $shLit   = [string][int]$script:shade
+    $wsLit   = [string][int]$script:weekStart
+    $lcLit   = $(if ($script:legendCounts)  { 'true' } else { 'false' })
+    $csLit   = $(if ($script:catStripe)     { 'true' } else { 'false' })
+    $stnLit  = $(if ($script:showTentative) { 'true' } else { 'false' })
     $smLit   = [string][int]$script:startMonth
     # v3.4.2: when the view starts after January it needs the FOLLOWING year,
     # and fetching that after the page had rendered meant the spill months
@@ -3439,8 +4145,9 @@ function Build-YearViewHtml {
     # pass inserts every value exactly once and never looks at it again.
     $subst = @{
         DATA = $json; DATA2 = $data2Lit; YEAR = [string]$Y; TICKS = $ticks; TOKEN = $tok
-        HIDE = $hideLit; HIDESET = $hideSet; CONFIRMDEL = $confLit; SCROLLYEARS = $scrlLit
+        HIDE = $hideLit; HIDESET = $hideSet; CONFIRMDEL = $confLit; CONFIRMMOVE = $cmLit; SCROLLYEARS = $scrlLit
         PRINTPAGES = $prtLit; PRINTLEGEND = $plgLit; STARTMONTH = $smLit; NOTITLES = $ntLit
+        SHADE = $shLit; WEEKSTART = $wsLit; LEGENDCOUNTS = $lcLit; CATSTRIPE = $csLit; SHOWTENTATIVE = $stnLit
     }
     $fill = {
         param($m)
@@ -3504,7 +4211,22 @@ fetch("/build?year=__Y__", {method:"POST", headers:{"X-YV-Token":"__TOKEN__"}})
       }
       throw 0;
     }
-    location.replace("/?year=__Y__");
+    // v3.6.9: carry the REST of the query string through. This line had
+    // rebuilt the URL from the year alone, so any page that reached the
+    // splash came back having lost `whole` (the whole-year view, v3.6.6)
+    // and `arm` (the highlighted category) - which is why a delete that
+    // fell through to a full rebuild returned to the split view even
+    // though it was issued on a whole year. `hide` survived by other
+    // means, being persisted server-side, but is carried here too.
+    // Anything unexpected leaves the old behaviour exactly as it was.
+    var extra = "";
+    try {
+      var qp = new URLSearchParams(location.search);
+      qp.delete("year");
+      var rest = qp.toString();
+      if (rest) { extra = "&" + rest; }
+    } catch(_e) { extra = ""; }
+    location.replace("/?year=__Y__" + extra);
   })
   .catch(function(e){
     if(e && e.wait){ setTimeout(function(){ attempt(n+1); }, e.wait); return; }
@@ -3877,10 +4599,16 @@ function Save-Settings {
     # key=value per line so more settings can be added without a format change.
     Write-CfgAtomic (Join-Path (Split-Path -Parent $PSCommandPath) 'yv-settings.cfg') `
         (('confirmdelete=' + $(if ($script:confirmDelete) { '1' } else { '0' })) + "`r`n" +
+         ('confirmmove='   + $(if ($script:confirmMove)   { '1' } else { '0' })) + "`r`n" +
          ('scrollyears='   + $(if ($script:scrollYears)   { '1' } else { '0' })) + "`r`n" +
          ('notitles='      + [string]$script:noTitles) + "`r`n" +
          ('printpages='    + [string]$script:printPages) + "`r`n" +
          ('printlegend='   + $(if ($script:printLegend)   { '1' } else { '0' })) + "`r`n" +
+         ('shade='         + [string]$script:shade) + "`r`n" +
+         ('weekstart='     + [string]$script:weekStart) + "`r`n" +
+         ('legendcounts='  + $(if ($script:legendCounts)  { '1' } else { '0' })) + "`r`n" +
+         ('catstripe='     + $(if ($script:catStripe)     { '1' } else { '0' })) + "`r`n" +
+         ('showtentative=' + $(if ($script:showTentative) { '1' } else { '0' })) + "`r`n" +
          ('startmonth='    + [string]$script:startMonth))
 }
 function Load-Settings {
@@ -3895,11 +4623,26 @@ function Load-Settings {
                 if ($kvp.Count -ne 2) { continue }
                 switch ($kvp[0].Trim()) {
                     'confirmdelete' { $script:confirmDelete = ($kvp[1].Trim() -ne '0') }
+                    # v3.6.4: like the delete prompt, only an explicit '0' turns it off
+                    'confirmmove'   { $script:confirmMove   = ($kvp[1].Trim() -ne '0') }
                     'scrollyears'   { $script:scrollYears   = ($kvp[1].Trim() -ne '0') }
                     'printlegend'   { $script:printLegend   = ($kvp[1].Trim() -ne '0') }
+                    # v3.6.0: both OFF unless the file says exactly '1'
+                    'legendcounts'  { $script:legendCounts  = ($kvp[1].Trim() -eq '1') }
+                    'catstripe'     { $script:catStripe     = ($kvp[1].Trim() -eq '1') }
+                    'showtentative' { $script:showTentative = ($kvp[1].Trim() -ne '0') }
+                    'weekstart'     { if ($kvp[1].Trim() -eq '1') { $script:weekStart = 1 } else { $script:weekStart = 0 } }
                     'notitles'      {
                         # v3.4.7: NOT trimmed - a category name is matched exactly.
                         if (Test-TitleCsv $kvp[1]) { $script:noTitles = [string]$kvp[1] }
+                    }
+                    'shade'         {
+                        # v3.5.0: 0 (white) through 3 (darker grey); anything
+                        # else leaves the default rather than an unknown tint.
+                        $sh = 0
+                        if ([int]::TryParse($kvp[1].Trim(), [ref]$sh) -and $sh -ge 0 -and $sh -le 3) {
+                            $script:shade = $sh
+                        }
                     }
                     'startmonth'    {
                         # v3.4.0: -1 (follow the current month) through 11.
@@ -4149,10 +4892,16 @@ function Update-SettingLiterals([string]$html) {
     # the filter seed since v2.1.22. The value is a bare true/false, so it
     # ends at the ';'.
     foreach ($pair in @(@('const CONFIRM_DELETE = ', $script:confirmDelete),
+                        @('const CONFIRM_MOVE = ',   $script:confirmMove),
                         @('const SCROLL_YEARS = ',   $script:scrollYears),
                         @('const NO_TITLES = ',      [string]$script:noTitles),
                         @('const PRINT_PAGES = ',    $script:printPages),
                         @('const PRINT_LEGEND = ',   $script:printLegend),
+                        @('const SHADE = ',          $script:shade),
+                        @('const WEEK_START = ',     $script:weekStart),
+                        @('const LEGEND_COUNTS = ',  $script:legendCounts),
+                        @('const CAT_STRIPE = ',     $script:catStripe),
+                        @('const SHOW_TENTATIVE = ', $script:showTentative),
                         @('const START_MONTH = ',    $script:startMonth))) {
         # v3.4.9: the marker is matched at the START OF A LINE, as it is
         # written in the client. A bare IndexOf found the FIRST occurrence
@@ -5155,7 +5904,7 @@ while ($true) {
                 # table entry rather than a new branch that can drift.
                 $applied = $false
                 $smChanged = $false
-                foreach ($k in @('confirmdelete', 'scrollyears', 'printlegend')) {
+                foreach ($k in @('confirmdelete', 'confirmmove', 'scrollyears', 'printlegend', 'legendcounts', 'catstripe', 'showtentative')) {
                     if ($reqBody -match ('(?:^|&)' + $k + '=([^&]*)')) {
                         $raw = $Matches[1]
                         try { $raw = [uri]::UnescapeDataString($raw.Replace('+', '%20')) } catch {}
@@ -5164,8 +5913,12 @@ while ($true) {
                         # the wrong variable by a two-way if/else.
                         switch ($k) {
                             'confirmdelete' { $script:confirmDelete = $on }
+                            'confirmmove'   { $script:confirmMove   = $on }
                             'scrollyears'   { $script:scrollYears   = $on }
                             'printlegend'   { $script:printLegend   = $on }
+                            'legendcounts'  { $script:legendCounts  = $on }
+                            'catstripe'     { $script:catStripe     = $on }
+                            'showtentative' { $script:showTentative = $on }
                         }
                         $applied = $true
                     }
@@ -5181,6 +5934,23 @@ while ($true) {
                     }
                     $smChanged = ($script:startMonth -ne $sn)
                     $script:startMonth = $sn
+                    $applied = $true
+                }
+                if ($reqBody -match '(?:^|&)weekstart=([^&]*)') {
+                    # v3.6.0: exactly 0 (Sunday) or 1 (Monday); anything else is refused.
+                    $wsv = $Matches[1].Trim()
+                    if ($wsv -ne '0' -and $wsv -ne '1') { throw 'Unknown setting.' }
+                    $script:weekStart = [int]$wsv
+                    $applied = $true
+                }
+                if ($reqBody -match '(?:^|&)shade=([^&]*)') {
+                    # v3.5.0: range-checked here as at load; a bad value is
+                    # REFUSED, and the client puts the control back.
+                    $shn = -1
+                    if (-not [int]::TryParse($Matches[1].Trim(), [ref]$shn) -or $shn -lt 0 -or $shn -gt 3) {
+                        throw 'Unknown setting.'
+                    }
+                    $script:shade = $shn
                     $applied = $true
                 }
                 if ($reqBody -match '(?:^|&)printpages=([^&]*)') {
@@ -5566,6 +6336,12 @@ while ($true) {
                     } catch {}
                     $script:nextModCheck = (Get-Date).AddSeconds($script:modCheckInterval)
                 }
+                # v3.6.2: a move whose new date had not reached the folder listing
+                # in time asks for ONE more quiet re-read here.
+                if ($script:moveRecheck -and (Get-Date) -ge $script:moveRecheck) {
+                    $script:moveRecheck = $null
+                    $changed = $true
+                }
                 if ($changed) {
                     # v1.2.25: STALE-REVALIDATE, not clear-everything. The
                     # detection signals cannot say WHICH year changed, but
@@ -5738,10 +6514,116 @@ while ($true) {
                     }
                     Write-Host ("  - Deleted '{0}'" -f $subj) -ForegroundColor Cyan
                 }
+                # v3.6.2: and the kept copy of the following year, for the same
+                # reason /move drops it - an item deleted from the months after
+                # December would otherwise be redrawn from that copy.
+                $script:payloads.Clear()
                 # server knows the content changed: a reload arriving before the
                 # client's rebuild must get the splash + a fresh build, never the
                 # pre-delete page from cache
                 $script:pages.Clear()
+                Send-Http $stream '200 OK' 'application/json' (JsonBytes '{"ok":true}')
+            } catch {
+                Send-Http $stream '200 OK' 'application/json' (JsonError $_.Exception.Message)
+            }
+        }
+        elseif ($path.StartsWith('/move?')) {
+            # v3.6.1: move an item by a whole number of days (drag a bar to
+            # another day). The time of day and the length are kept. POST +
+            # token like every other action. Deliberately narrow:
+            #   - the item is authorised against the selected calendar first;
+            #   - REPEATING items are refused (an occurrence cannot be moved
+            #     past its neighbours, and moving a series is a different act);
+            #   - MEETINGS are refused, because changing one here would not
+            #     tell the attendees - that has to be done in Outlook;
+            #   - the page must name the item's CURRENT start, so a stale page
+            #     can never move an item that has since been changed.
+            $qs = $path.Substring($path.IndexOf('?') + 1)
+            $kv = @{}
+            foreach ($p in ($qs -split '&')) {
+                $pair = $p -split '=', 2
+                if ($pair.Count -eq 2) { $kv[$pair[0]] = [Uri]::UnescapeDataString($pair[1]) }
+            }
+            try {
+                $days = 0
+                if (-not [int]::TryParse([string]$kv['days'], [ref]$days) -or $days -eq 0 -or $days -lt -366 -or $days -gt 366) {
+                    throw 'Invalid move.'
+                }
+                $item = Assert-SelectedCalendarItem ($ns.GetItemFromID($kv['id'], $script:calStoreId))
+                if ($item.IsRecurring) { throw 'Repeating items cannot be moved by dragging. Open the item in Outlook instead.' }
+                $mst = 0
+                try { $mst = [int]$item.MeetingStatus } catch { $mst = -1 }
+                if ($mst -ne 0) { throw 'This is a meeting. Move it in Outlook so that the other attendees are told.' }
+                $s0 = [datetime]$item.Start
+                $e0 = [datetime]$item.End
+                if ($s0.ToString('yyyy-MM-ddTHH:mm:ss', $script:invCulture) -ne [string]$kv['start']) {
+                    throw 'That item has changed since this page was built. Refresh and try again.'
+                }
+                $s1 = $s0.AddDays($days)
+                $e1 = $e0.AddDays($days)
+                $subj = [string]$item.Subject
+                $item.Start = $s1
+                $item.End   = $e1
+                $item.Save()
+                # Confirm the change is visible to a fresh lookup before
+                # replying (cap ~2 s) - the same reason /delete waits: the
+                # client rebuilds a moment later and must not read the old date.
+                $seen = $false
+                for ($w = 0; $w -lt 20; $w++) {
+                    try {
+                        $chk = $ns.GetItemFromID($kv['id'], $script:calStoreId)
+                        if ([datetime]$chk.Start -eq $s1) { $seen = $true; break }
+                    } catch {}
+                    Start-Sleep -Milliseconds 100
+                }
+                if (-not $seen) { throw 'Outlook did not confirm the move. Refresh to see where the item is.' }
+                # v3.6.2: the check above asks Outlook for the ITEM, and Outlook
+                # answers from the object it has just saved - which says nothing
+                # about whether the folder's own LISTING shows the new date yet.
+                # The rebuild that follows reads the listing, and in the field
+                # it read the old date: the move was right in Outlook and the
+                # page still drew the item where it had been. So wait until a
+                # FRESH listing of the days around the new date contains the
+                # item there (matched on subject and start, since a listing's
+                # ids can differ in form from the item's). A listing start is
+                # UTC; an all-day item may be stored as local or as UTC
+                # midnight, so anything within 14.5 hours counts - a move is
+                # never less than a whole day, so the old position cannot match.
+                $vis = $false
+                try {
+                    $calF = Get-SelectedCalendar
+                    $dS = 'urn:schemas:calendar:dtstart'
+                    $tf = '@SQL="{0}" < ''{1}'' AND "{0}" > ''{2}''' -f $dS,
+                        $s1.AddDays(3).ToString('yyyy/MM/dd HH:mm', $script:invCulture),
+                        $s1.AddDays(-3).ToString('yyyy/MM/dd HH:mm', $script:invCulture)
+                    for ($w = 0; $w -lt 25 -and -not $vis; $w++) {
+                        $tb = $calF.GetTable($tf, 0)
+                        $tb.Columns.RemoveAll()
+                        [void]$tb.Columns.Add($dS)
+                        [void]$tb.Columns.Add('Subject')
+                        while (-not $tb.EndOfTable) {
+                            $row = $tb.GetNextRow()
+                            $rs = $row.Item($dS)
+                            if ([string]$row.Item('Subject') -ceq $subj -and $rs -is [datetime]) {
+                                $loc = [DateTime]::SpecifyKind([datetime]$rs, 'Utc').ToLocalTime()
+                                if ([Math]::Abs(($loc - $s1).TotalHours) -le 14.5) { $vis = $true; break }
+                            }
+                        }
+                        if (-not $vis) { Start-Sleep -Milliseconds 200 }
+                    }
+                } catch { $vis = $false }
+                # If the listing never showed it in five seconds (or could not
+                # be asked), have the next few polls trigger one more quiet
+                # re-read, so the page corrects itself rather than staying wrong.
+                if (-not $vis) { $script:moveRecheck = (Get-Date).AddSeconds(6) }
+                Write-Host ("  ~ Moved '{0}' by {1} day(s){2}" -f $subj, $days, $(if ($vis) { '' } else { ' (listing not yet updated - will re-read)' })) -ForegroundColor Cyan
+                $script:pages.Clear()
+                # The spill months are served from a kept copy of the FOLLOWING
+                # year, reused until a change is detected - and this change is
+                # our own, which detection is told to ignore. Without this an
+                # item moved within (or into, or out of) the months after
+                # December stayed where it was on the page.
+                $script:payloads.Clear()
                 Send-Http $stream '200 OK' 'application/json' (JsonBytes '{"ok":true}')
             } catch {
                 Send-Http $stream '200 OK' 'application/json' (JsonError $_.Exception.Message)

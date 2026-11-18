@@ -1,12 +1,13 @@
 # YearView — Release History
 
-**Version 3.4.9 · 17 October 2026**
+**Version 3.6.13 · 18 November 2026**
 
-A consolidated history from the v2.0.12 production baseline to v2.1.15.
-Entries state what changed and, where it matters, why — the root cause rather
-than the symptom. Work before the baseline (the calendar picker, server-side
-filter persistence, clean uninstall, and the interaction fixes that led to
-2.0.12) and the 1.x series are covered by their own changelogs.
+A consolidated history from the v2.0.12 production baseline to the current
+release. Entries state what changed and, where it matters, why — the root
+cause rather than the symptom. Work before the baseline (the calendar
+picker, server-side filter persistence, clean uninstall, and the interaction
+fixes that led to 2.0.12) and the 1.x series are covered by their own
+changelogs.
 
 ## The baseline
 
@@ -188,6 +189,11 @@ script, the documents and the installer metadata.
 
 ## Version 3
 
+The 3.x series is the bulk of this history. It is set out below by sub-series,
+each named for what that run of releases was mostly about.
+
+### Scrolling and the continuous timeline (3.0.0 – 3.1.9)
+
 Version 3.0.0 opened a new series with year navigation by mouse wheel and by
 touch. Both defer to the page: they take effect only once there is nothing
 left to scroll in that direction, so a legitimate scroll on a window too
@@ -334,6 +340,8 @@ nowhere to travel backwards to, so a rule meant to prove intent would have
 made the earlier year unreachable instead — the same trap as the capped
 distance a few releases earlier.
 
+### Printing, and settings that carry more than a yes or no (3.2.0 – 3.2.4)
+
 Version 3.2.0 added a setting for how many sheets a print is squeezed onto,
 and in doing so made the settings mechanism carry something other than a
 yes or no for the first time. The table that drives the panel gained a type
@@ -398,6 +406,8 @@ confidently, then instrumentation, then a control that showed a regression
 was really a slower machine, then a number that pointed straight at the
 answer. The measurements were quicker than the guessing and considerably
 more accurate.
+
+### Print fidelity and the reading of the grid (3.3.0 – 3.3.6)
 
 Version 3.3.0 dealt with two print complaints that turned out to be one
 mechanism. The dialog showed the page as portrait when it printed
@@ -491,6 +501,8 @@ it, so the stored value is now ignored rather than obeyed, and left in place
 rather than deleted. This release is built on v3.3.4, so the browser flags
 added in v3.3.5 are not in it; the number still ascends, because it always
 must.
+
+### Starting the year where you like, and publication (3.4.0 – 3.4.9)
 
 Version 3.4.0 let the year view begin at a month other than January. The
 feature needed two years' events on one page, which is what the multi-year
@@ -610,6 +622,253 @@ said it did not, and the shared-machine exposure documented as view-only
 when the page carries the token; the note was corrected and the
 single-user requirement made explicit. Appointment titles were taken out
 of the error log, and the publisher name became the GitHub handle.
+
+### Page shading (3.5.0 – 3.5.1)
+
+Version 3.5.0, the first feature after publication, added **Page shading**:
+White, Light, Medium or Darker grey for the page's white areas. All of them
+were already one colour variable, so each level is a set of variable overrides
+on the page root, live and without a rebuild. The care was in what had to move
+with the paper: at the darkest level the original weekend tint and grid lines
+all but vanished into the grey, so each level carries its own darker weekend,
+out-of-month, month-label and line colours, checked by rendering every level in
+a real browser rather than by reasoning about hex values. The new seeded
+setting followed the line-anchored rule from 3.4.9 and was exercised by the
+same real-PowerShell harness.
+
+Version 3.5.1 followed a day later in response to feedback: the lines should
+darken steadily with the greys to keep their contrast. Measured, they had not:
+line- to-page contrast held roughly level across the four levels and even
+dipped slightly at Light, which reads as lines fading on a darker page. Each
+level's line and outline colours are now solved for a rising contrast ratio
+against its page, keeping the original blue-grey tint, and White is unchanged.
+
+### The page review, and what measuring it found (3.6.0 – 3.6.13)
+
+Version 3.6.0 came out of a review of the page as a whole and added seven
+things: a Monday week start, a Today button and plain-key shortcuts, Find, a
+hover card in place of the browser tooltip, hatching for tentative items, and
+two options - item counts in the legend and a stripe for a second category.
+Tentative marking needed one more field from Outlook, read as an optional
+eighth Table column; if Outlook refuses the column the feature switches itself
+off in every reader, so the fast path and its validation are never the price of
+a cosmetic.
+
+The release also found a fault that had sat unnoticed since v3.2.4. The reader
+functions were run for the first time, against a mock Outlook, and the batched
+row read threw on its first row: in PowerShell the comma binds tighter than
+'+', so an index written [$r,$cLo+1] is a three-element index. The caller
+caught the error and fell back to the classic reader for the session, which is
+correct but slower - so, unless Windows PowerShell 5.1 parses that line
+differently from PowerShell 7 (it should not), the batching credited with the
+v3.2.4 speed-up has not been running. The indices are now parenthesised. It is
+the clearest case yet for the rule this history keeps arriving at: code that
+has only been read has not been tested.
+
+Version 3.6.1 added the one item held back from 3.6.0 because it changes
+calendar data in a new way: dragging a bar to another day to move the item. It
+is hedged accordingly - a confirmation every time, and refusal of repeating
+items, meetings and stale pages. Testing in a real browser found what
+inspection would not have: after a double-click the bar's text is selected, and
+the browser then begins its own text drag on the next press and stops sending
+mouse movements. Bar text is no longer selectable.
+
+Version 3.6.2 fixed the first field report on moving: the item moved in
+Outlook, and the page went on showing it on its old day. The move route had
+confirmed the save by asking Outlook for the item - which Outlook answers from
+the object just saved - while the rebuild that follows reads the folder's
+listing, which can trail it. The page was rebuilt from the old listing, and
+because a build re-baselines change detection, nothing was left to notice the
+difference afterwards: the trap the delete route's own comments had described
+years earlier. The route now waits until a fresh listing shows the item at its
+new date, and schedules one more quiet re-read if it does not. A second cause
+was closed at the same time: the months after December are drawn from a kept
+copy of the following year, which neither a move nor a delete was discarding.
+
+Version 3.6.3 removed an occasional full "loading" screen after a move. The
+page waited 700 ms before rebuilding, a delay inherited from the delete flow
+and no longer needed once the server waited for the move to show. In that gap
+the change poll could notice the edit and start a background update; the
+rebuild then arrived mid-build, was told the bridge was busy, navigated, and
+met a page cache the move had just emptied. The rebuild now starts at once,
+which closes the gap. The collision was reproduced in a browser test that
+models the single-threaded bridge before the fix was accepted.
+
+Version 3.6.4 made the move confirmation a setting, **Confirm before moving**,
+on by default and beside its delete counterpart. With it off, the toast names
+the new date, since that is then the only statement of where the item went.
+
+Version 3.6.5 made the hatching of tentative items a setting, **Show tentative
+items hatched**, on by default. Off, they are drawn like any other item; the
+hover card still names them.
+
+Version 3.6.6 gave the split year a place in the sequence of years. Going
+forward from a view such as November to October already showed the following
+year from January; going back skipped to the year before, so this year's
+January to October could not be reached at all. The arrows now walk last year,
+this year whole, the split view, next year, each step undone by the opposite
+arrow, and the two middle steps redraw in place without a reload. The change
+also fixed a latent fault: with the following year held in the page for the
+split view, showing a single year drew both.
+
+Version 3.6.7 closed a measurement gap that had been open since the per-phase
+timings were added in v3.2.1. Those timings covered the Outlook calls, so a
+one-second read could sit under a three-second update with nothing to account
+for the difference - which is what was asked about. The phases between the last
+COM call and the finished payload are now timed too, and the stamp carries
+them: the serialisation the v1.2.3 rewrite was assumed to have made negligible
+turns out, on a container at least, to cost about as much as the read itself.
+Two notes on the mechanics. A number appended into the payload is part of the
+payload's SYNTAX, so the new figures are coerced rather than interpolated raw -
+a regression test caught a missing value blanking the page, which is the JSON
+equivalent of the unsubstituted placeholder trap. And the fallback serialiser
+cannot time itself, because it builds the perf block before converting it; it
+reports -1 and the page says so instead of showing a zero.
+
+Version 3.6.8 acted on what v3.6.7 had just measured. The reported figures
+from a real machine - 793 items, one second to read Outlook and one second to
+serialise - matched the container's, so the serialisation was worth attacking.
+The cause was not the volume of data. Each item's title, category and
+identifier passes through an escaper that calls Regex.Replace with a
+PowerShell scriptblock as the evaluator, and PowerShell converts that
+scriptblock into a MatchEvaluator delegate on every call, whether or not the
+pattern matches. Ordinary calendar text matches nothing, so the callback never
+ran; the cost was entirely in preparing a callback that was never used. Three
+calls an item made it about a second a year. The comment above the function
+had asserted the opposite, reasoning from the callback never firing - correct
+about the callback, wrong about where the time went, and it had stood
+unchallenged since v1.2.3 because nothing measured it. The fix tests for
+escapable characters directly and calls the escaper only when the answer is
+yes: 764 ms to 6 ms on ordinary text, 1271 ms to 73 ms on text hostile
+throughout.
+
+Because the change claims to alter speed and nothing else, the verification
+was built to prove the output had not moved rather than to exercise features.
+A complete page was built by the real PowerShell from both versions over the
+same items and compared byte for byte; the serialiser was run from both over
+a corpus of injection attempts, control characters and null fields; and both
+escapers were fuzzed from both versions over every code point to 0x2FF and
+4,000 random strings. All identical. That last test matters more than it
+looks, because the escaper has callers well outside the page build, and one
+fuzz run covered them all without a test being written for each.
+
+The same reported figures left two larger costs clearly visible and
+unaddressed: the object-model reader at roughly seventeen times the per-item
+cost of the bulk path, and first-build validation at three seconds a session.
+Both had been suspected for several releases; neither could be ranked against
+the other until something measured them. They also confirmed, by way of "bulk
+788 in 2 calls", that the batched read repaired in v3.6.0 was running on
+Windows PowerShell 5.1 at last - it had been failing over silently since
+v3.2.4, which is the fault that prompted the per-phase timings in the first
+place.
+
+Version 3.6.9 closed two reported faults that proved to be one chain. A delete
+sometimes ended in a full page rebuild, and after that rebuild the page came
+back in the split view even though the delete had been made on a whole year.
+The first was the v3.6.3 move fault verbatim, fixed there and not here: the
+700 ms pause before refreshing let the change poll notice the user's own
+deletion, start a background update, and leave the refresh to arrive
+mid-build, be told busy, navigate, and meet an empty page cache. The pause had
+never been needed, because the delete route already waits for the item to
+leave the folder listing before replying - the same property that made the
+move fix safe. The second fault lived in the loading splash, which rebuilt its
+destination as "/?year=Y" and so discarded every other query parameter.
+Carrying `whole` had been added to every navigation path in v3.6.6, but the
+splash is not a navigation path; it is a separate page with its own three
+lines of script, and it was missed. It was also quietly losing the armed
+category; the hidden-category filter escaped only because it is persisted
+server-side and reseeded from there.
+
+Two things are worth drawing out. A fix applied to one of two paths that share
+a shape is a fix half made, and the second path will be reported later as a
+new fault - the v3.6.3 comment even described the mechanism precisely enough
+to have found the delete case by reading. And state threaded through
+navigation needs checking at every place a URL is CONSTRUCTED, not every place
+it is navigated to; the splash's one-line destination was the only constructor
+outside the client's navSuffix, and being in a different here-string put it
+out of sight. Both faults were reproduced before being fixed - the delete race
+3 times out of 3, the splash deterministically - and both verified by the same
+harness afterwards.
+
+Version 3.6.10 renamed one setting: "Year starts at" became "Current year
+starts at". The setting had only ever governed the current year, every other
+year being shown January to December, and the label had never said so. Worth a
+line here only because the rename had to reach the help panel and the function
+summary as well as the control, while the release history keeps the old wording
+where it records what earlier versions did - a label is not one string once it
+has been documented.
+
+Version 3.6.11 came out of re-examining whether page load and refresh were
+actually optimised, now that v3.6.8 had removed the serialisation cost. Timing
+the phases the stamp still did not cover put most of the remaining suspicion to
+rest: the R-17 garbage collect after each read costs about 11 ms, writing the
+encrypted page cache 3 ms, and the prune scan beside it 3 ms, while the client
+reaches first paint 216 ms after a 265 KB page starts loading. None of that is
+worth touching.
+
+What the review did find was waste of a different kind. The dual-reader
+validation that costs three seconds already saved its verdict to disk so it
+need not repeat - but keyed on $script:yvVersion, so every release discarded
+it. Hashing the three reader functions across 3.6.7, 3.6.8, 3.6.9 and 3.6.10
+showed them byte-identical: four releases had each re-earned the same verdict
+because a number beside the code had moved. The key is now a hash of the
+reader's own text, so the verdict is void exactly when the thing it attests to
+changes and stands otherwise. The seven-day expiry, the delete-on-failure and
+the first-run-on-a-machine cost are all unchanged, and any failure to compute
+the signature falls back to validating - the fallback is the old behaviour,
+never a skipped check.
+
+Two notes on the method. The signature is taken by brace-matching the script's
+own text rather than parsing it, which is about five times quicker at startup
+but could in principle be defeated by an unbalanced brace inside a string; so
+the build now computes it both ways and refuses to package unless they agree,
+moving a runtime hazard to build time. And the finding itself only existed
+because v3.6.7 had made the cost visible: an invisible three seconds had sat
+in every session since the validation was introduced, attributed to nothing in
+particular, and the fix was not to make the check faster but to notice it was
+being asked for again and again with no new question to answer.
+
+The review also restated the one large cost that remains and deliberately
+left it alone. The object-model reader takes 0.9 s of a 1.0 s read, 160 items
+against 633 on the bulk path, roughly seventeen times the cost each. The
+all-day items go down it by design, to get Outlook's own normalisation across
+two storage conventions, so moving them is a correctness risk and not merely a
+speed change - and precisely the kind that cannot be settled without Outlook
+to test against.
+
+Version 3.6.12 gave the Find box AND and OR. The query parses into an OR of
+ANDs, so AND binds first and any number of terms works, and a term still
+matches against the title and the category together.
+
+The design question was not the parsing but the operators' case. Lower-case
+"and" is ordinary English in a subject line, so treating it as an operator
+would silently break searches that had always worked; requiring capitals both
+avoids that and gives a way to search for the word itself. The same reasoning
+settled what a half-typed query should do: "abc AND" with nothing after it is
+not an operator but the literal text "abc and", so the view does not flash
+empty between keystrokes. That last behaviour was what the test suite caught -
+the expectation written for it was wrong rather than the code, because the
+corpus happened to contain the words "abc and" and the match was correct.
+
+The change also became the first demonstration of v3.6.11: it does not touch
+the reader, so the signature is unchanged and the release costs none of the
+three-second validation.
+
+Version 3.6.13 outlined the legend chip of a category the search matches. It
+began as a question about whether Find covered categories at all - it had since
+v3.6.0, and a test against the shipped build confirmed every case including an
+item's second category - so the feature asked for already existed. What did
+not exist was any sign of it: a search for a category name lit the right bars
+and left the reader to infer why. The gap was in the feedback, not the
+function, and that is worth recording, because a feature nobody can see
+working is reported as a missing feature.
+
+The rule chosen for the chip is the bars' own rule applied to the category
+name alone, which means "travel AND work" marks no chip even though bars
+light, since no single category satisfies it. Marking both would have looked
+more responsive and said something untrue. Chips are also not dimmed the way
+non-matching bars are: the legend is the control surface, and fading it during
+a search would obstruct filtering exactly when it is wanted.
 
 ## What the history shows
 

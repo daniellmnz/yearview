@@ -1,6 +1,6 @@
 # YearView — Function Summary
 
-**Version 3.4.9 · 17 October 2026**
+**Version 3.6.13 · 18 November 2026**
 
 YearView is a single-file PowerShell application that renders a full
 year-at-a-glance view of the classic Outlook calendar in a dedicated window. It
@@ -21,10 +21,15 @@ day, bars are ordered deterministically: all-day events at the top, longer
 spans above shorter within each group (so multi-day bars read as continuous
 ribbons), then timed events earliest to latest. Events with no category draw as
 hollow bars so they are distinguishable from genuinely grey categories.
-Hovering a bar shows the subject and times. The header stamp reads
-"Generated … · calendar · N items · Outlook read X.X s · YearView version
-x.x.x", with a per-phase performance breakdown — including which
-calendar reader served the build — available by hovering the stamp.
+Resting the pointer on a bar opens a card with its full title, dates, times,
+categories and whether it repeats or is tentative; tentative items (typically
+invitations not yet accepted) are drawn hatched. The header stamp reads
+"Generated … · calendar · N items · Outlook read X.X s · page data X.X s ·
+YearView version x.x.x". **Outlook read** is the time spent reading the
+calendar; **page data** the time spent afterwards turning it into this page,
+which since v3.6.7 is measured rather than assumed to be small. Hovering the
+stamp breaks both down by phase, names which calendar reader served the build,
+and adds the browser's own render time.
 
 ## Interacting with the calendar
 
@@ -45,11 +50,8 @@ legend for items that should carry no category at all. The "+ New category"
 picker lists every category already defined in Outlook — select one to arm it, or type a name to
 create a genuinely new one, checked for characters that would break Outlook’s
 own category separators or the stored filter list — and the ‹ › controls move
-between years, as does the mouse wheel or a vertical swipe on a touch screen.
-Wheel and swipe only take over once the page has nothing left to scroll in
-that direction, so on a window too short to show the whole year the view
-scrolls first and moves between years only at the edge; the behaviour can be
-switched off in Settings.
+between years, with **Today** returning to the current year and marking
+today's cell.
 
 ## Choosing the calendar
 
@@ -173,16 +175,19 @@ legend stays on screen either way.
 
 ## Starting the year at a chosen month
 
-**Year starts at** in Settings takes January (the ordinary whole year),
+**Current year starts at** in Settings takes January (the ordinary whole year),
 **Current month**, or any named month. Choose anything but January and the
 view still shows twelve month rows, beginning at that month and running on
 into the following year — so from July you see July to December of this
 year and January to June of the next. The heading says the span rather than
 a single year.
 
-Only the current year is affected. Stepping forward or back with the ‹ ›
-buttons always lands on a plain January-to-December year, which keeps at
-most two years in view at once.
+Only the current year is affected, and the ‹ › buttons step through the years
+in order around it: last year, this year whole from January, the chosen view,
+then next year. So going back from the chosen view shows this year from
+January, and going forward shows next year; the opposite arrow always returns
+to where you were. **Today** goes straight to the chosen view. At most two
+years are in view at once.
 
 The spill months belong to the following year, and the page is built
 carrying that year's events as well as its own — so they are part of the
@@ -213,6 +218,53 @@ times, clicking still opens it and right-clicking still deletes it. The
 change takes effect at once, applies to printing as it does on screen,
 and is saved with the other settings, so it survives restarts and is
 re-applied to pages already built.
+
+## Moving an item
+
+Dragging a bar onto another day moves the item by that many days, keeping its
+time of day and its length. The days it would land on are highlighted while
+dragging and Esc cancels. By default nothing changes in Outlook until a
+confirmation naming the old and new dates is accepted; **Confirm before
+moving** in Settings turns that prompt off, as **Confirm before deleting** does
+for deletions. The move is refused, with an explanation, for repeating items,
+for meetings (attendees would not be told) and for any item changed since the
+page was built.
+
+## Find, keyboard and display options
+
+The **Find** box in the header (or the **/** key) picks items out by title or
+category: matches keep their colour and an outline, everything else fades, and
+a count is shown. Terms can be combined with **AND** and **OR** — `abc AND
+ghi` needs both, `abc OR ghi` either, and AND binds first, so `a AND b OR c`
+means `(a AND b) OR c`. The operators are recognised only in capitals, so a
+lower-case `and` searches for the word itself. A category whose name the
+search matches is outlined in the legend, so a category match is visible
+rather than inferred. Enter scrolls to the first
+match and Esc clears it. Plain
+keys drive the common actions: left and right arrows change year, **T** goes to
+today, **F** opens the filter, **P** prints. They are ignored while typing in a
+field, and combinations with Ctrl or Alt are left to the browser.
+
+Three display options live in Settings. **Week starts on** chooses Sunday (the
+default) or Monday as the first column. **Show item counts in legend** adds,
+beside each category, the number of its items in the twelve months on screen.
+**Show second category as a stripe** draws a thin band in the second category's
+colour along the foot of any bar that has one; the bar's main colour is still
+its first category. The last two are off by default, and all three take effect
+at once. A fourth, **Show tentative items hatched**, is on by default; turned
+off, tentative items are drawn like any other, and the hover card still says
+which they are.
+
+## Page shading
+
+**Page shading** in Settings tints the page's white areas: White (the default),
+Light grey, Medium grey or Darker grey. A grey page is easier on the eyes for
+some people and makes the coloured bars stand out more. The weekend tint, the
+month labels and the days outside a month step down with it, and the grid lines
+and outlines darken faster than the page, so they stand out more, not less, as
+the grey deepens. The bars keep their own colours. The change takes effect at
+once, applies to printing as it does on screen, and is remembered across
+restarts.
 
 ## Instant year switching
 

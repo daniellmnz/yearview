@@ -25,7 +25,7 @@
 [CmdletBinding()]
 param(
     [string]$WixBin = "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin",
-    [string]$Version = '3.4.9',
+    [string]$Version = '3.6.13',
     [string]$Sign,
     [string]$TimestampUrl = 'http://timestamp.digicert.com'
 )

@@ -1,6 +1,6 @@
 # YearView — Security Design Note
 
-**Version 3.4.9 · 17 October 2026**
+**Version 3.6.13 · 18 November 2026**
 
 This note documents the localhost endpoint design, authentication model, and
 data-protection measures of the YearView bridge, for security review. It
@@ -48,7 +48,7 @@ error log.
 
 A per-session random token is generated at bridge start, embedded once into
 served pages, and required — via a custom request header — on every
-state-changing route (build, create, open, delete, calendar switch, category
+state-changing route (build, create, open, move, delete, calendar switch, category
 creation, quit), and on the read-only payload route (data). Page GETs are
 intentionally token-free (the page is where the token comes from). The
 token never touches disk in usable form: the encrypted page cache stores
@@ -142,8 +142,8 @@ certificate is available.
 An audit (July 2026) enumerated every Outlook COM member the script calls, in
 response to a programmatic-access prompt observed during development. The
 complete set of item properties read from any calendar item is: Start, End,
-Subject, AllDayEvent, Categories, IsRecurring, MessageClass, EntryID, and the
-recurrence pattern; the only schema properties used are calendar start/end
+Subject, AllDayEvent, Categories, IsRecurring, BusyStatus (since v3.6.0, to
+mark tentative items), MessageClass, EntryID, and the recurrence pattern; the only schema properties used are calendar start/end
 dates and the recurring/all-day MAPI flags. The script does NOT access the
 Contacts folder, the address book, the Global Address List, recipients,
 attendees, organiser, sender, or any address-resolution member — verified by
@@ -185,6 +185,12 @@ be a missing appointment in a calendar the user was not even viewing.
 The delete route additionally accepts only its three known modes, and refuses
 to treat a non-recurring item as an occurrence — so a malformed request can
 never fall through to a branch that deletes more than was asked.
+
+The move route (v3.6.1) applies the same authorisation and is narrow by design.
+It accepts only a whole number of days between -366 and 366; refuses repeating
+items and meetings; requires the request to state the item's current start, so
+a stale page cannot move an item that has since changed; and confirms the new
+date is readable before replying.
 
 ## Accepted risks and rejected mitigations (with reasons)
 
