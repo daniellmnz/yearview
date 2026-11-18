@@ -93,7 +93,7 @@ $script:fastScanOk      = $true
 # LastModificationTime fingerprint - the reported 10-20 s update lag.
 $script:comPump = New-Object Threading.ManualResetEvent($false)
 $script:modCheckInterval = -1             # adaptive fingerprint cadence (seconds); -1 = measure on first run
-$script:yvVersion = '3.6.13'              # ALSO bump the stamp string when changing this
+$script:yvVersion = '3.7.3'              # ALSO bump the stamp string when changing this
 $script:contentHashes = @{}               # per-year order-independent content hash (echo suppression)
 # Calendar selection (v2.0.0): empty = the default calendar. Restricted by
 # design to calendars in the DEFAULT STORE (the picker only offers those);
@@ -1231,7 +1231,7 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
     (perf && perf.prepMs >= 0 && perf.serMs >= 0
       ? " \u00B7 page data " + secs(perf.prepMs + perf.serMs) : "") +
     (data.truncated ? " \u00B7 \u26A0 truncated at 8000 items" : "") +
-    " \u00B7 YearView version 3.6.13";
+    " \u00B7 YearView version 3.7.3";
   if (perf) stampEl.title =
     "reader: " + (perf.reader || "classic") +
     " \u00B7 categories " + secs(perf.catMs) + " \u00B7 restrict " + secs(perf.setupMs) +
@@ -3643,7 +3643,24 @@ function Read-YearFast([object]$cal, [string]$filter, [datetime]$rangeStart, [da
             if ($v[3] -is [bool] -and $v[3]) { continue }   # all-day: OM path below
             $st = [DateTime]::SpecifyKind([datetime]$v[0], 'Utc').ToLocalTime()
             $en = [DateTime]::SpecifyKind([datetime]$v[1], 'Utc').ToLocalTime()
-            if (-not ($st -lt $rangeEnd -and $en -gt $rangeStart)) { continue }
+            # v3.7.3: -le, not -lt, on the START only. This test must agree with
+            # the filter the reference reader hands to Outlook, because the two
+            # readers are compared item for item and any disagreement costs the
+            # session its fast reader. They did NOT agree: Outlook treats
+            # "[Start] < 'D'" as INCLUSIVE of an item starting exactly at that
+            # midnight, while -lt excludes it. Only an all-day item starts
+            # exactly at midnight, so the only item that could ever land on the
+            # boundary was one starting at 00:00 on 1 January of the next year -
+            # which is why this sat here unnoticed from the beginning.
+            #
+            # The END side is deliberately NOT changed. It was measured too, on
+            # the same calendar and by the same method, and Outlook treats
+            # "[End] > 'D'" as STRICT. Making this symmetric "for consistency"
+            # would pull in every item finishing exactly at midnight on the
+            # first day - a new fault introduced while fixing one. The two
+            # operators simply do not behave alike, and the measurement is in
+            # the release notes.
+            if (-not ($st -le $rangeEnd -and $en -gt $rangeStart)) { continue }
             if ($n -ge 8000) { Write-Warning 'Stopped at 8000 items (safety cap).'; $trunc = $true; break }
             $kw = $v[4]
             $catStr = ''

@@ -1,6 +1,6 @@
 # YearView — Function Summary
 
-**Version 3.6.13 · 18 November 2026**
+**Version 3.7.3 · 18 November 2026**
 
 YearView is a single-file PowerShell application that renders a full
 year-at-a-glance view of the classic Outlook calendar in a dedicated window. It
@@ -301,12 +301,18 @@ on demand.
 Reading the year uses a hybrid strategy: timed non-recurring items come from
 Outlook's fast Table API (with build-independent UTC date columns converted
 locally), while recurring series and all-day items go through the object
-model's own recurrence and all-day normalisation. The fast reader is validated
+model's own recurrence and all-day normalisation. Moving non-recurring all-day
+items onto the Table path was attempted in v3.7.0 and withdrawn in v3.7.2:
+Outlook reports `AllDayEvent = False` for an all-day item whose duration a
+clock change has made other than a whole number of days, so the two readers
+disagreed about what such an item is. The fast reader is validated
 item-for-item against the classic single-path reader on the live calendar, with
 functional resolution checks on item identifiers; any error or mismatch falls
 back to the classic reader with a logged, field-diagnosable diff. The
-validation verdict is persisted per (script version, Outlook version) with a
-seven-day expiry, so routine sessions skip the dual read and revalidate weekly.
+validation verdict is persisted per (reader code hash, Outlook version) with a
+seven-day expiry, so routine sessions skip the dual read and revalidate weekly;
+keying it on the reader's own code rather than the script version (v3.6.11)
+means a release that does not touch the reader keeps the verdict.
 Field results: a 753-item year dropped from ~11 s to ~4 s on a laptop and
 ~4.7 s to ~2 s on an i9 desktop. `-ClassicScan` forces the original reader.
 

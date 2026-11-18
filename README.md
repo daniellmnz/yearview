@@ -54,7 +54,7 @@ Each release includes `SHA256SUMS.txt`; you can check the download against it
 before installing:
 
 ```powershell
-Get-FileHash .\YearView-3.6.13.msi
+Get-FileHash .\YearView-3.7.3.msi
 ```
 
 ## Using it
@@ -109,7 +109,7 @@ On Windows, with the [WiX Toolset v3](https://github.com/wixtoolset/wix3/release
 On Linux, `wixl` from msitools builds the same package:
 
 ```sh
-wixl -o YearView-3.6.13.msi YearView.wxs
+wixl -o YearView-3.7.3.msi YearView.wxs
 ```
 
 ## Documentation

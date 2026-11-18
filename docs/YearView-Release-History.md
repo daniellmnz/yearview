@@ -1,6 +1,6 @@
 # YearView — Release History
 
-**Version 3.6.13 · 18 November 2026**
+**Version 3.7.3 · 18 November 2026**
 
 A consolidated history from the v2.0.12 production baseline to the current
 release. Entries state what changed and, where it matters, why — the root
@@ -869,6 +869,136 @@ light, since no single category satisfies it. Marking both would have looked
 more responsive and said something untrue. Chips are also not dimmed the way
 non-matching bars are: the legend is the control surface, and fading it during
 a search would obstruct filtering exactly when it is wanted.
+
+### Reading all-day items in bulk (3.7.0)
+
+Version 3.7.0 moved non-recurring all-day items onto the table path, which
+they had been kept off since the beginning because an all-day item has more
+than one storage convention and a raw read cannot tell them apart. The
+objection was sound and was never tested; a read-only diagnostic run against
+the real calendar settled it. Across 2024, 2025 and 2026, 140 non-recurring
+all-day items, every one stored the same way, and the table's values
+reproduced the object model's exactly.
+
+What made the change safe was not that finding but the shape of the guard. The
+reader does not assume the convention it measured; it checks the OUTCOME -
+both boundaries must land on a midnight, or within two hours of one - and
+sends anything that fails to the object model, one item at a time, exactly as
+before. An item stored against another time zone's midnight reads hours away
+from local midnight, fails, and is fetched properly. So the optimisation is
+correct everywhere and faster only where the values happen to verify, which is
+the right way round.
+
+The diagnostic also found a fault that had been shipping unnoticed. An all-day
+item spanning a daylight-saving change comes back from the object model an
+hour off midnight - late where the clocks go back, early where they go forward
+- and since only an exact midnight counts as belonging to the previous day,
+the late ones gained a whole day on the grid. Two items in the 2026 calendar,
+none in 2024 or 2025, which is why nobody had seen it. Both boundaries are now
+snapped to the nearest midnight, bounded at two hours so that the correction
+can only ever repair a clock-change artefact and never relocate a value that
+is wrong for some other reason.
+
+Three things are worth keeping from how this was done. The objection in the
+comment - two conventions, indistinguishable - had stood unexamined for many
+releases because nothing could test it without Outlook; a sixty-line read-only
+script answered it in an afternoon, and the answer was not the one the comment
+assumed. The guard was written to verify rather than to trust, which is why a
+finding from one calendar in one time zone could be shipped to anyone.
+And the change had to be made in BOTH readers at once: Compare-YearReads
+checks them against each other, so changing one would have made every
+clock-spanning all-day item differ, failed validation, and dropped the session
+onto the slow reader permanently and silently - the same failure that hid the
+batched-read fault from v3.2.4 to v3.6.0. The test asserts the two readers
+agree before it asserts anything else.
+
+Version 3.7.1 undid a speed regression introduced by 3.7.0, reported from the
+field as a twenty-second first build on the slower laptop. The new code tested
+AllDayEvent to decide whether to correct an item's dates and then read the
+same property again to record it - two cross-process calls where there had
+been one, for every item in both readers. The classic reader runs over the
+whole calendar as the validation half of a session's first build, so at about
+two and a half milliseconds a call that was some two seconds added to the
+slowest moment of a session.
+
+The instructive part is that the function already said so. A v3.2.1 comment
+two lines above reads "one property access, not two - the classic reader runs
+in full on the FIRST build of every session as the validation half", written
+about Categories for precisely this reason. The rule was stated, in the right
+place, and still broken, because it was read as a note about one property
+rather than as the invariant it is. A comment that records a conclusion is
+weaker than a test or a gate; this one has now been broken once and that is
+worth remembering when the next property is added.
+
+Version 3.7.2 withdrew 3.7.0 and 3.7.1 and restored the v3.6.13 reader, after
+the field reported a twenty-second first build and the tooltip showed the
+reason: "reader: classic" on both machines. The fast reader had produced 768
+items where the reference reader produced 769, validation had failed, and
+every session was paying for both reads and then using the slower one. No
+wrong date ever reached the screen - the comparison did exactly what it exists
+for - but the optimisation had made things worse than doing nothing.
+
+The mismatch log named both faults. First, an item carrying the all-day flag
+in its stored properties that Outlook's object model reports as
+AllDayEvent = False, because the April clock change makes its duration six
+days and an hour rather than a whole number of days; the table trusted the
+stored flag, the object model did not, and the readers disagreed about what
+the item was. Second, an item starting at exactly the first instant after the
+year, which the table path's own date test excludes and Outlook's Restrict
+includes - a boundary disagreement that had been harmless since the beginning
+because only an all-day item starts at exactly midnight, so only an all-day
+item could ever land on it.
+
+Both faults are instructive about the limits of the testing that preceded
+them. The change had been exercised against a stand-in for Outlook, across
+twelve time zones and 4,380 synthetic days, and it passed everything; a
+calendar of 769 real items broke it twice in ways no synthetic case had
+modelled, because both faults are properties of how Outlook itself behaves
+rather than of arithmetic. A mock can only contain the behaviours its author
+already knows about. The diagnostic script that preceded the change was the
+right instinct and was not taken far enough: it compared dates, and the first
+fault is a disagreement about a FLAG.
+
+What held was the architecture rather than the judgement. The dual-reader
+validation caught a defect its author did not anticipate, named the three
+diverging items in the log with dates and flags and no private content, and
+degraded to the slow-but-correct path on its own. The verdict being keyed to
+the reader's code hash (v3.6.11) then made the restoration checkable rather
+than asserted: v3.7.2's hash is byte-identical to v3.6.13's.
+
+Version 3.7.3 fixed the boundary disagreement that v3.7.0 had exposed and
+v3.7.2 had left dormant. The bulk reader decided year membership itself, in
+PowerShell, while the reference reader asked Outlook; the two differed about
+an item starting at exactly the first instant after the year. Outlook includes
+it. The change is one character, -lt to -le.
+
+What made it worth the afternoon was the END of the same test. The obvious
+move is to make both comparisons inclusive, and it is wrong: measured on the
+real calendar, "[Start] < 'D'" is inclusive of an item starting exactly at D
+while "[End] > 'D'" is strict. Symmetry here would have pulled every item
+finishing at midnight on 1 January into the previous year - a new silent fault
+introduced while fixing one. Both sides were measured; only one was changed.
+
+The measuring tool needed correcting twice before it could be trusted, and
+both corrections are the point. Its first version inferred the operator by
+probing, which meant enumerating the whole calendar and issuing filters such
+as "[Start] < '01/01/2025'" - every appointment ever recorded, one
+cross-process call each - and it ran for many minutes before being abandoned.
+Its second version returned three verdicts from three dates, two of which
+disagreed with the third; the cause was that it formatted probe dates as
+MM/dd/yyyy on a machine that reads dd/MM, so "02/06/2026" was being read as
+2 June and the probe was testing a boundary four months away. The source
+comment above the filter had warned of exactly this, and explained that
+YearView only ever uses 1 January because it reads the same either way.
+
+Three things follow. A diagnostic is software and deserves the same suspicion
+as the code it examines - this one was wrong twice and would have produced a
+confident, wrong change both times. Disagreement between probes is worth more
+than agreement, because only the disagreement revealed the locale fault; a
+tool that had probed a single date would have reported "the whole day is
+included" with no hint that anything was amiss. And a warning already written
+in a comment is not a safeguard: the locale hazard was documented, in the
+right file, a few lines from the code that walked into it.
 
 ## What the history shows
 
