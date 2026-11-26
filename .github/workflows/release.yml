@@ -57,6 +57,17 @@ jobs:
       - name: Verify the package against its sources
         run: python3 -I build/verify-msi.py | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # Every run keeps its package, released or not, so a build can be
+      # downloaded and compared against one built anywhere else.
+      - name: Keep the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: YearView-${{ steps.ver.outputs.version }}-msi
+          path: |
+            dist/YearView-*.msi
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+
       # Does this version already have a release? If so the run stops here,
       # having proved the package still builds and still matches its sources.
       - name: Decide whether to publish
