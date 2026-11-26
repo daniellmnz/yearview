@@ -1,6 +1,6 @@
 # YearView — Function Summary
 
-**Version 3.7.3 · 18 November 2026**
+**Version 3.7.4 · 26 November 2026**
 
 YearView is a single-file PowerShell application that renders a full
 year-at-a-glance view of the classic Outlook calendar in a dedicated window. It
@@ -218,6 +218,13 @@ times, clicking still opens it and right-clicking still deletes it. The
 change takes effect at once, applies to printing as it does on screen,
 and is saved with the other settings, so it survives restarts and is
 re-applied to pages already built.
+
+Since v3.7.4 the title is **not written into the page** for such a bar,
+rather than written and made transparent as it was before. A printed PDF
+therefore does not carry it: until that release the text was still there,
+invisible but selectable and copyable, so a year printed with titles off
+was not safe to pass on. Note that the hover card still shows the title
+deliberately, so the setting conceals a printout rather than a screen.
 
 ## Moving an item
 

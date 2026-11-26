@@ -1,6 +1,6 @@
 # YearView — Security Design Note
 
-**Version 3.7.3 · 18 November 2026**
+**Version 3.7.4 · 26 November 2026**
 
 This note documents the localhost endpoint design, authentication model, and
 data-protection measures of the YearView bridge, for security review. It

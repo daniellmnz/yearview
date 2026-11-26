@@ -93,7 +93,7 @@ $script:fastScanOk      = $true
 # LastModificationTime fingerprint - the reported 10-20 s update lag.
 $script:comPump = New-Object Threading.ManualResetEvent($false)
 $script:modCheckInterval = -1             # adaptive fingerprint cadence (seconds); -1 = measure on first run
-$script:yvVersion = '3.7.3'              # ALSO bump the stamp string when changing this
+$script:yvVersion = '3.7.4'              # ALSO bump the stamp string when changing this
 $script:contentHashes = @{}               # per-year order-independent content hash (echo suppression)
 # Calendar selection (v2.0.0): empty = the default calendar. Restricted by
 # design to calendars in the DEFAULT STORE (the picker only offers those);
@@ -766,6 +766,12 @@ $template = @'
   /* v3.4.7: a category whose titles are switched off in the Filter panel - the
      bar keeps its colour, size, outline and tooltip; only the text goes.
      Applies on paper too, as on screen. */
+  /* v3.7.4: a bar in this class is now EMPTY - the title is not written into
+     it at all. The colour rule is kept only as a second line of defence, so
+     that if some later code path ever does put text in such a bar it is still
+     invisible on screen. It must not be relied on: transparent ink still
+     prints into a PDF, still answers Ctrl+F and still copies out, which is
+     exactly the fault this release fixes. */
   .bar.notitle{color:transparent}
   /* v3.6.0: Find - everything but the matches steps back */
   #months.finding .bar:not(.hit){opacity:.18}
@@ -1090,6 +1096,10 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
   const SHOW_TENTATIVE = __SHOWTENTATIVE__; // v3.6.5: false = tentative items drawn like any other
   let showTentative = SHOW_TENTATIVE !== false;
   const barEv = new WeakMap();
+  // v3.7.4: the bar's own text is no longer a reliable source for its title,
+  // because a category set to hide titles now renders an empty bar. The event
+  // record is the source of truth and barEv has carried it all along.
+  const barTitle = b => { const ev = barEv.get(b); return ev ? String(ev.t || "") : ""; };
   let findQ = "";
   // v3.6.12: AND / OR in the Find box. `findQ` stays the raw trimmed query,
   // because several places test it for emptiness; `findTerms` is the parsed
@@ -1231,7 +1241,7 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
     (perf && perf.prepMs >= 0 && perf.serMs >= 0
       ? " \u00B7 page data " + secs(perf.prepMs + perf.serMs) : "") +
     (data.truncated ? " \u00B7 \u26A0 truncated at 8000 items" : "") +
-    " \u00B7 YearView version 3.7.3";
+    " \u00B7 YearView version 3.7.4";
   if (perf) stampEl.title =
     "reader: " + (perf.reader || "classic") +
     " \u00B7 categories " + secs(perf.catMs) + " \u00B7 restrict " + secs(perf.setupMs) +
@@ -1429,15 +1439,22 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
       if (findQ && findMatch(ev)) bar.classList.add("hit");
       bar.style.gridColumn = (L.offset + ev.d0 + 1) + " / " + (L.offset + ev.d1 + 2);
       bar.style.gridRow = (ev.lane + 2);
-      // v3.4.7: titles per category. The text stays IN the bar - opening and
-      // deleting an item both read it - and only its ink is removed.
-      if (noTitles.has(catKey(ev))) bar.classList.add("notitle");
+      // v3.4.7 put the title in the bar regardless and merely removed its ink,
+      // because opening and deleting an item both read it back out of the
+      // element. v3.7.4: that is not hiding. Transparent text is still in the
+      // document - it prints into a PDF where anyone can select and copy it,
+      // it answers the browser's own Find, and it is plain in the page source.
+      // A year printed with titles turned off was meant to be safe to hand
+      // over, and it was not. The text is now simply not written, and the two
+      // places that read it back use the event record instead.
+      const hideTitle = noTitles.has(catKey(ev));
+      if (hideTitle) bar.classList.add("notitle");
       // v3.6.0: no title attribute - the hover card (below) shows the detail,
       // and the browser's own tooltip would appear on top of it.
       if (ev.id) bar.dataset.id = ev.id;
       if (ev.r) bar.dataset.rec = "1";
       bar.dataset.start = ev.s;
-      bar.innerHTML = esc(ev.t);
+      bar.innerHTML = hideTitle ? "" : esc(ev.t);
       g.appendChild(bar);
     }
     // ensure at least one empty lane row + padding for visual air
@@ -2391,7 +2408,7 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
     const bar = e.target.closest(".bar");
     if (!bar) return;
     if (mvJustDragged) return;        // v3.6.1: the release of a drag is not a click
-    openItem(bar.dataset.id, bar.dataset.start, bar.textContent);
+    openItem(bar.dataset.id, bar.dataset.start, barTitle(bar));
   });
 
   /* ---- v3.6.1: drag a bar to another day to MOVE the item ----
@@ -2609,7 +2626,7 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
     hideCtx();
     if (act === "goto" && dayD){ gotoDate(dayD); return; }
     if (!act || !bar) return;
-    const label = bar.textContent;
+    const label = barTitle(bar);
     if (act === "open"){ openItem(bar.dataset.id, bar.dataset.start, label); return; }
     if (!SERVED){ toast("Deleting needs the YearView app \u2014 run the script with -Serve"); return; }
     const mode = act === "delseries" ? "series" : (act === "delocc" ? "occ" : "item");

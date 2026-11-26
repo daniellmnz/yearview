@@ -1,6 +1,6 @@
 # YearView — Release History
 
-**Version 3.7.3 · 18 November 2026**
+**Version 3.7.4 · 26 November 2026**
 
 A consolidated history from the v2.0.12 production baseline to the current
 release. Entries state what changed and, where it matters, why — the root
@@ -999,6 +999,32 @@ tool that had probed a single date would have reported "the whole day is
 included" with no hint that anything was amiss. And a warning already written
 in a comment is not a safeguard: the locale hazard was documented, in the
 right file, a few lines from the code that walked into it.
+
+Version 3.7.4 fixed a confidentiality fault in the per-category title filter,
+reported from the field: a year printed to PDF with titles turned off still
+contained them, invisible but selectable, and copying a bar revealed its
+title. The v3.4.7 implementation wrote the title into the bar as usual and set
+its ink to transparent, and the comment beside it said why - opening and
+deleting an item both read the title back out of the element. That reasoning
+was sound for the screen and silently wrong for paper. Transparent text is
+still text: it prints, it answers the browser's Find, it is plain in the page
+source and a screen reader would announce it. The title is now simply not
+written, and the two readers take it from the item record the page has always
+held beside each bar.
+
+The lesson is about where a property is enforced. "Hidden" was implemented as
+a presentation attribute, and presentation attributes do not survive a change
+of medium - the PDF kept the content and discarded the styling that concealed
+it. A confidentiality property has to be enforced by absence, not by appearance.
+
+The testing is worth recording too, because the first attempt passed falsely.
+Printing the page at a small page size makes each bar a few pixels wide;
+Chromium then drops the clipped text, and both the faulty and the fixed
+version reported no leak. The test only became a test once the sample items
+were long enough for their titles to be legible on paper - the condition under
+which the fault had been reported in the first place. A green result from a
+test that cannot observe the fault is worth less than no test at all, because
+it is believed.
 
 ## What the history shows
 

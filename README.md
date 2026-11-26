@@ -12,7 +12,8 @@ You can also create, open and delete items from the year view.
 - Twelve months on one screen, with multi-day items drawn as continuous bars.
 - Colours taken from your Outlook categories, plus a category legend and
   filter. For each category, you can choose whether to show it at all and
-  whether its items show their titles.
+  whether its items show their titles. A title turned off is not written into
+  the page at all, so it does not travel in a printed PDF.
 - To create an item, click a category and then a day, or drag across several
   days. Click a bar to open it in Outlook, drag it to another day to move
   it, or right-click to delete it.
@@ -54,7 +55,7 @@ Each release includes `SHA256SUMS.txt`; you can check the download against it
 before installing:
 
 ```powershell
-Get-FileHash .\YearView-3.7.3.msi
+Get-FileHash .\YearView-3.7.4.msi
 ```
 
 ## Using it
@@ -109,7 +110,7 @@ On Windows, with the [WiX Toolset v3](https://github.com/wixtoolset/wix3/release
 On Linux, `wixl` from msitools builds the same package:
 
 ```sh
-wixl -o YearView-3.7.3.msi YearView.wxs
+wixl -o YearView-3.7.4.msi YearView.wxs
 ```
 
 ## Documentation
