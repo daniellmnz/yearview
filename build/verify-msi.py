@@ -201,6 +201,41 @@ def main():
     else:
         check(False, "SHA256SUMS.txt exists", f"{sums} not found")
 
+    # ---- canonical digest ----------------------------------------------
+    # One number covering everything in the package except the two fields
+    # that cannot be reproducible: the package code, which Windows Installer
+    # requires to be fresh for every build, and the build timestamp. Two
+    # builders who print the same digest built the same installer, even on
+    # different wixl versions and with different file sizes.
+    print("\ncanonical digest")
+    tables = sorted(subprocess.run(["msiinfo", "tables", str(msi)],
+                                   capture_output=True, text=True, check=True
+                                   ).stdout.replace("\r\n", "\n").split())
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    try:
+        h = hashlib.sha256()
+        for table in tables + ["_SummaryInformation"]:
+            # Run in a scratch directory: msiinfo writes binary stream tables
+            # (Icon) to disk as <Table>/<Table>.<key> beside the caller.
+            rows = subprocess.run(["msiinfo", "export", str(msi), table],
+                                  capture_output=True, text=True, cwd=tmp
+                                  ).stdout.replace("\r\n", "\n").split("\n")
+            if table == "_SummaryInformation":
+                # 9 is the package code, 12 and 13 the created and saved times.
+                rows = [r for r in rows if r.split("\t")[0] not in ("9", "12", "13")]
+            h.update(f"[{table}]\n".encode())
+            for row in sorted(rows):
+                h.update(row.encode() + b"\n")
+        # binary streams msiinfo wrote out, by content
+        for p in sorted(tmp.rglob("*")):
+            if p.is_file():
+                h.update(p.relative_to(tmp).as_posix().encode())
+                h.update(hashlib.sha256(p.read_bytes()).digest())
+        print(f"  {h.hexdigest()}")
+        print("  (same digest = same installer; it excludes the package code and build time)")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
     print(f"\n{checks - len(failures)}/{checks} checks passed")
     if failures:
         print("FAILED: " + "; ".join(failures))
