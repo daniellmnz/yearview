@@ -30,11 +30,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install msitools
+      # wixl ships in its own package; msitools provides msiinfo and
+      # msiextract, which build/verify-msi.py reads the package back with.
+      - name: Install wixl and msitools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq msitools
-          wixl --version
+          sudo apt-get install -y -qq wixl msitools
+          echo "wixl $(wixl --version), msiinfo $(msiinfo --version | head -1)"
 
       - name: Read the version
         id: ver
