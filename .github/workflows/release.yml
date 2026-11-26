@@ -93,9 +93,18 @@ jobs:
             echo "::error::tag $TAG exists but has no release - resolve it by hand"
             exit 1
           fi
-          # A release with no notes is a mistake, not a release.
-          if [ ! -f "docs/changes/CHANGES-v${{ steps.ver.outputs.version }}.md" ]; then
-            echo "::error::docs/changes/CHANGES-v${{ steps.ver.outputs.version }}.md is missing"
+          # A release with no notes is a mistake, not a release. The notes
+          # that go on a release are the ones written for readers, in
+          # docs/releases; docs/changes is the technical record and is only a
+          # fallback so that a release is never published with no notes.
+          VER=${{ steps.ver.outputs.version }}
+          if   [ -f "docs/releases/RELEASE-NOTES-v$VER.md" ]; then
+            echo "notes=docs/releases/RELEASE-NOTES-v$VER.md" >> "$GITHUB_OUTPUT"
+          elif [ -f "docs/changes/CHANGES-v$VER.md" ]; then
+            echo "::warning::no docs/releases/RELEASE-NOTES-v$VER.md - falling back to the changes file"
+            echo "notes=docs/changes/CHANGES-v$VER.md" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::no release notes for $VER in docs/releases or docs/changes"
             exit 1
           fi
           echo "publish=yes" >> "$GITHUB_OUTPUT"
@@ -106,11 +115,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.ver.outputs.tag }}
           VER: ${{ steps.ver.outputs.version }}
+          NOTES: ${{ steps.decide.outputs.notes }}
         run: |
+          # The checksum belongs to the package just built, so it is appended
+          # here rather than committed ahead of a build that has not run.
+          BODY=$(mktemp)
+          cat "$NOTES" > "$BODY"
+          {
+            echo
+            echo '**Verifying the download**'
+            echo
+            echo '```powershell'
+            echo "Get-FileHash .\\YearView-$VER.msi"
+            echo '```'
+            echo
+            echo 'should match the value in `SHA256SUMS.txt`:'
+            echo
+            echo '```'
+            cut -d' ' -f1 "dist/SHA256SUMS.txt"
+            echo '```'
+          } >> "$BODY"
           gh release create "$TAG" \
             --target "$GITHUB_SHA" \
             --title "YearView $VER" \
-            --notes-file "docs/changes/CHANGES-v$VER.md" \
+            --notes-file "$BODY" \
             --latest \
             "dist/YearView-$VER.msi" \
             "dist/SHA256SUMS.txt"

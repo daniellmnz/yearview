@@ -121,17 +121,27 @@ payload against `src/` byte for byte, the install sequence, and the shortcuts.
 
 Two builds of the same sources are not byte-identical, and should not be:
 Windows Installer requires a fresh package code for each build, and the
-package stores a build timestamp. Those two fields aside, every table and the
-whole payload are reproducible.
+package stores a build timestamp. So `verify-msi.py` also prints a canonical
+digest, taken over every table and stream with the package code, the build
+time and the name of the building tool left out. Two builders that print the
+same digest built the same installer. `wixl` 0.103 and 0.106 produce packages
+1024 bytes apart from these sources and the same digest; `--dump` prints the
+material the digest covers, to find out where two that disagree differ.
 
 ### Releases
 
 [`.github/workflows/release.yml`](.github/workflows/release.yml) builds and
-verifies on every push to `main`. When the version in
-`src/New-OutlookYearView.ps1` has no release yet, it also tags the commit
-`V<version>` and publishes the MSI and `SHA256SUMS.txt`, taking the release
-notes from `docs/changes/CHANGES-v<version>.md`. Bumping the version is all it
-takes to cut a release; pushing anything else is safe.
+verifies on every push to `main`, and keeps the package it built. When the
+version in `src/New-OutlookYearView.ps1` has no release yet, it also tags the
+commit `V<version>` and publishes the MSI and `SHA256SUMS.txt`. Bumping the
+version is all it takes to cut a release; pushing anything else is safe.
+
+Release notes come from `docs/releases/RELEASE-NOTES-v<version>.md` — written
+for whoever is installing it. `docs/changes/CHANGES-v<version>.md` is the
+technical record of what changed, and is used only as a fallback so that a
+release is never published without notes. The checksum block at the end of the
+notes is appended by the workflow from the package it built, so it is not
+written by hand.
 
 ## Documentation
 
