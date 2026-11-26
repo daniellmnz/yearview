@@ -1,0 +1,101 @@
+name: Build and release
+
+# Every push to main builds the MSI and runs the checks in build/verify-msi.py,
+# so a broken package is caught whether or not it is being released.
+#
+# Publishing is driven by the version in src/New-OutlookYearView.ps1. When that
+# version has no release yet, this workflow tags the commit V<version> and
+# publishes the MSI and SHA256SUMS.txt against it. When it already has one,
+# the build and the checks still run and nothing is published - so pushing
+# documentation or a fix to an already-released version is safe, and bumping
+# the version is all it takes to cut the next release.
+#
+# Run it by hand from the Actions tab to rebuild and re-check without pushing.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write          # needed to create the tag and the release
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install msitools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq msitools
+          wixl --version
+
+      - name: Read the version
+        id: ver
+        run: |
+          VER=$(sed -n "s/^\$script:yvVersion = '\([0-9][0-9.]*\)'.*/\1/p" \
+                  src/New-OutlookYearView.ps1 | head -1)
+          if [ -z "$VER" ]; then
+            echo "::error::no \$script:yvVersion in src/New-OutlookYearView.ps1"
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=V$VER"    >> "$GITHUB_OUTPUT"
+          echo "YearView $VER" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build
+        run: ./build/build-msi.sh
+
+      - name: Verify the package against its sources
+        run: python3 -I build/verify-msi.py | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Does this version already have a release? If so the run stops here,
+      # having proved the package still builds and still matches its sources.
+      - name: Decide whether to publish
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "publish=no" >> "$GITHUB_OUTPUT"
+            echo "$TAG is already released - built and verified, nothing published." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # A tag without a release means something went wrong before, or the
+          # tag was moved. Stop rather than guess.
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::tag $TAG exists but has no release - resolve it by hand"
+            exit 1
+          fi
+          # A release with no notes is a mistake, not a release.
+          if [ ! -f "docs/changes/CHANGES-v${{ steps.ver.outputs.version }}.md" ]; then
+            echo "::error::docs/changes/CHANGES-v${{ steps.ver.outputs.version }}.md is missing"
+            exit 1
+          fi
+          echo "publish=yes" >> "$GITHUB_OUTPUT"
+
+      - name: Tag and publish
+        if: steps.decide.outputs.publish == 'yes'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VER: ${{ steps.ver.outputs.version }}
+        run: |
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "YearView $VER" \
+            --notes-file "docs/changes/CHANGES-v$VER.md" \
+            --latest \
+            "dist/YearView-$VER.msi" \
+            "dist/SHA256SUMS.txt"
+          echo "published $TAG" >> "$GITHUB_STEP_SUMMARY"
+          gh release view "$TAG" --json tagName,name,assets \
+            --jq '"\(.name)  [\(.assets|map(.name)|join(", "))]"' >> "$GITHUB_STEP_SUMMARY"

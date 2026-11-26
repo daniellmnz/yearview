@@ -107,11 +107,31 @@ On Windows, with the [WiX Toolset v3](https://github.com/wixtoolset/wix3/release
 .\build-msi.ps1                 # builds YearView-<version>.msi from YearView.wxs and src\
 ```
 
-On Linux, `wixl` from msitools builds the same package:
+On Linux, with `msitools` installed:
 
 ```sh
-wixl -o YearView-3.7.4.msi YearView.wxs
+./build/build-msi.sh            # builds dist/YearView-<version>.msi and SHA256SUMS.txt
+python3 build/verify-msi.py     # checks the package against the sources it came from
 ```
+
+The version is read from `src/New-OutlookYearView.ps1`, never passed in, so
+the package cannot disagree with the script it carries. `verify-msi.py` checks
+that it does not, along with the product code, the per-user install, the
+payload against `src/` byte for byte, the install sequence, and the shortcuts.
+
+Two builds of the same sources are not byte-identical, and should not be:
+Windows Installer requires a fresh package code for each build, and the
+package stores a build timestamp. Those two fields aside, every table and the
+whole payload are reproducible.
+
+### Releases
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) builds and
+verifies on every push to `main`. When the version in
+`src/New-OutlookYearView.ps1` has no release yet, it also tags the commit
+`V<version>` and publishes the MSI and `SHA256SUMS.txt`, taking the release
+notes from `docs/changes/CHANGES-v<version>.md`. Bumping the version is all it
+takes to cut a release; pushing anything else is safe.
 
 ## Documentation
 

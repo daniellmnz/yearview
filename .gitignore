@@ -8,6 +8,7 @@ edge-profile/
 YearView-Signing.cer
 
 # MSI build output
+dist/
 obj/
 *.msi
 *.wixobj
