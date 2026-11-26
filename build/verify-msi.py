@@ -208,33 +208,47 @@ def main():
         check(False, "SHA256SUMS.txt exists", f"{sums} not found")
 
     # ---- canonical digest ----------------------------------------------
-    # One number covering everything in the package except the two fields
-    # that cannot be reproducible: the package code, which Windows Installer
-    # requires to be fresh for every build, and the build timestamp. Two
-    # builders who print the same digest built the same installer, even on
-    # different wixl versions and with different file sizes.
+    # One number covering what the package DOES, so that two builders who
+    # print the same digest built the same installer. Left out are the fields
+    # that describe the build rather than the product, and so cannot agree
+    # between two builds or two toolchains:
+    #   package code  - Windows Installer requires a fresh one per build
+    #   build times   - stamped at build
+    #   application   - the name and version of the tool that built it
+    # Empty tables are skipped too: wixl versions differ in which table
+    # schemas they create with no rows in them, which installs nothing.
+    SUMINFO_SKIP = {
+        "9": "package code",
+        "12": "created time",
+        "13": "saved time",
+        "18": "building application",
+    }
     print("\ncanonical digest")
-    tables = sorted(subprocess.run(["msiinfo", "tables", str(msi)],
-                                   capture_output=True, text=True, check=True
-                                   ).stdout.replace("\r\n", "\n").split())
+    tables = subprocess.run(["msiinfo", "tables", str(msi)],
+                            capture_output=True, text=True, check=True
+                            ).stdout.replace("\r\n", "\n").split()
+    tables = sorted(set(tables) | {"_SummaryInformation"})
     tmp = pathlib.Path(tempfile.mkdtemp())
     try:
         h = hashlib.sha256()
-        for table in tables + ["_SummaryInformation"]:
+        for table in tables:
             # Run in a scratch directory: msiinfo writes binary stream tables
             # (Icon) to disk as <Table>/<Table>.<key> beside the caller.
-            rows = subprocess.run(["msiinfo", "export", str(msi), table],
-                                  capture_output=True, text=True, cwd=tmp
-                                  ).stdout.replace("\r\n", "\n").split("\n")
+            out = subprocess.run(["msiinfo", "export", str(msi), table],
+                                 capture_output=True, text=True, cwd=tmp).stdout
+            rows = [r for r in out.replace("\r\n", "\n").replace("\0", "").split("\n") if r]
             if table == "_SummaryInformation":
-                # 9 is the package code, 12 and 13 the created and saved times.
-                rows = [r for r in rows if r.split("\t")[0] not in ("9", "12", "13")]
+                rows = [r for r in rows if r.split("\t")[0] not in SUMINFO_SKIP]
+            else:
+                # Three header lines and nothing else: an empty table.
+                if len(rows) <= 3:
+                    continue
             h.update(f"[{table}]\n".encode())
             if DUMP:
                 print(f"[{table}]")
             for row in sorted(rows):
                 h.update(row.encode() + b"\n")
-                if DUMP and row:
+                if DUMP:
                     print(f"  {row}")
         # binary streams msiinfo wrote out, by content
         for p in sorted(tmp.rglob("*")):
