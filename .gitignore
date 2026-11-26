@@ -10,6 +10,8 @@ YearView-Signing.cer
 # MSI build output
 dist/
 obj/
+# msiinfo writes binary stream tables to disk as <Table>/<Table>.<key>
+Icon/
 *.msi
 *.wixobj
 *.wixpdb
