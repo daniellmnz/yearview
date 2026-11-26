@@ -1,6 +1,6 @@
 # YearView — Release History
 
-**Version 3.7.4 · 26 November 2026**
+**Version 3.7.6 · 27 November 2026**
 
 A consolidated history from the v2.0.12 production baseline to the current
 release. Entries state what changed and, where it matters, why — the root
@@ -1025,6 +1025,45 @@ were long enough for their titles to be legible on paper - the condition under
 which the fault had been reported in the first place. A green result from a
 test that cannot observe the fault is worth less than no test at all, because
 it is believed.
+
+Version 3.7.5 made the status line optional, and off by default. The line
+reports what the page is and how it was built - generated time, mailbox, item
+count, read timings, version - which is what makes it useful while something
+is being diagnosed and what makes it unwanted the rest of the time, because it
+names the mailbox on a page that is often shown to other people or printed.
+
+The implementation took its instruction from 3.7.4 rather than repeating it.
+The obvious way to hide a line is to hide the element, and that is precisely
+the mistake the previous release had just finished undoing: a hidden element
+keeps its text, and text survives the change of medium into a PDF. So "off"
+here means the line is never written - no text, no tooltip, and removed from
+the layout - and the test asserts the mailbox cannot be found in the page, in
+what a copy would pick up, or in the text extracted from a printed PDF. The
+same test checks the opposite case, that turning it on restores it without a
+reload, since a setting that needs a restart to take effect is a different
+feature from the one asked for.
+
+One further path had to be covered. Settings are baked into each page when it
+is built, and pages are cached; a change is applied to a cached page by
+re-stamping the literal in place. Had that been missed, turning the line off
+would have left it on screen until the cache happened to be rebuilt - the
+setting would have appeared to work and then not have. That re-stamp is
+tested directly, in both directions, along with a control proving an unchanged
+setting rewrites the page byte for byte.
+
+Version 3.7.6 added the running version to the foot of the Settings panel.
+Turning the status line off by default in the release before had removed the
+only place the version appeared, which is a reasonable thing to want back and
+an easy thing to overlook when the change that removed it was about something
+else.
+
+The version had been written twice: once in `$script:yvVersion` and once in
+the page's stamp string, with a comment on the first telling whoever changed
+it to remember the second. A comment is not a gate — the same lesson 3.7.3
+had already provided, where a documented locale hazard sat a few lines above
+the code that walked into it. Rather than add a third copy for the panel, the
+version is now substituted into the page from the single declaration, and the
+comment that asked a human to keep two copies in step is gone with it.
 
 ## What the history shows
 

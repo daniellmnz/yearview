@@ -1,6 +1,6 @@
 # YearView — Function Summary
 
-**Version 3.7.4 · 26 November 2026**
+**Version 3.7.6 · 27 November 2026**
 
 YearView is a single-file PowerShell application that renders a full
 year-at-a-glance view of the classic Outlook calendar in a dedicated window. It
@@ -261,6 +261,19 @@ its first category. The last two are off by default, and all three take effect
 at once. A fourth, **Show tentative items hatched**, is on by default; turned
 off, tentative items are drawn like any other, and the hover card still says
 which they are.
+
+**Show status line** governs the line beneath the year: when the page was
+generated, the mailbox it was read from, how many items it holds, how long
+Outlook took, and the version. It is **off by default**, because that line
+names the mailbox and the page is often what ends up on a shared screen or in
+a printout. Turned off, the line is not written at all rather than hidden, so
+there is nothing to reveal by selecting and copying; turned on, it appears at
+once, and resting on it still shows the detailed timings.
+
+The running version is shown at the foot of the Settings panel, since with the
+status line off it would otherwise appear nowhere. It is stamped into the page
+from the one place the version is defined, so it cannot disagree with the
+build it came from.
 
 ## Page shading
 

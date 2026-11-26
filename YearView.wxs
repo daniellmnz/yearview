@@ -23,14 +23,14 @@
     in a 32-bit package on 64-bit Windows [SystemFolder] is SysWOW64, which would
     launch 32-bit PowerShell. The literal path is correct on both architectures.
   * Autostart is opt-in (Feature level 1000):
-        msiexec /i YearView-3.7.4.msi ADDLOCAL=FeatureMain,FeatureAutostart
+        msiexec /i YearView-3.7.6.msi ADDLOCAL=FeatureMain,FeatureAutostart
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
 
-  <Product Id="6BD356CF-C88E-5BED-A270-F277108A006F"
+  <Product Id="32AD88E2-4DA0-5BFC-AA30-E801E490DCC7"
            Name="YearView"
            Language="1033"
-           Version="3.7.4"
+           Version="3.7.6"
            Manufacturer="daniellmnz"
            UpgradeCode="D18151D9-0EF3-5CA2-B555-2069861B2555">
 
@@ -53,11 +53,11 @@
     <!-- ================= Upgrade handling ================= -->
     <Upgrade Id="D18151D9-0EF3-5CA2-B555-2069861B2555">
       <!-- any strictly older version is removed and replaced -->
-      <UpgradeVersion Minimum="0.0.0" Maximum="3.7.4"
+      <UpgradeVersion Minimum="0.0.0" Maximum="3.7.6"
                       IncludeMinimum="yes" IncludeMaximum="no"
                       Property="OLDERVERSIONBEINGUPGRADED" />
       <!-- block downgrades -->
-      <UpgradeVersion Minimum="3.7.4" IncludeMinimum="no"
+      <UpgradeVersion Minimum="3.7.6" IncludeMinimum="no"
                       OnlyDetect="yes" Property="NEWERVERSIONDETECTED" />
     </Upgrade>
 
@@ -256,7 +256,7 @@
     </Feature>
 
     <!-- Level 1000 = not installed unless explicitly requested:
-           msiexec /i YearView-3.7.4.msi ADDLOCAL=FeatureMain,FeatureAutostart  -->
+           msiexec /i YearView-3.7.6.msi ADDLOCAL=FeatureMain,FeatureAutostart  -->
     <Feature Id="FeatureAutostart" Title="Start at sign-in" Description="Runs the bridge in the background at sign-in" Level="1000">
       <ComponentRef Id="CompStartupShortcut" />
     </Feature>

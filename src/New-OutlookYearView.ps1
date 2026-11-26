@@ -93,7 +93,7 @@ $script:fastScanOk      = $true
 # LastModificationTime fingerprint - the reported 10-20 s update lag.
 $script:comPump = New-Object Threading.ManualResetEvent($false)
 $script:modCheckInterval = -1             # adaptive fingerprint cadence (seconds); -1 = measure on first run
-$script:yvVersion = '3.7.4'              # ALSO bump the stamp string when changing this
+$script:yvVersion = '3.7.6'              # the one place; the page is stamped from it
 $script:contentHashes = @{}               # per-year order-independent content hash (echo suppression)
 # Calendar selection (v2.0.0): empty = the default calendar. Restricted by
 # design to calendars in the DEFAULT STORE (the picker only offers those);
@@ -154,6 +154,9 @@ $script:weekStart       = 0              # v3.6.0: first column of the week - 0 
 $script:legendCounts    = $false         # v3.6.0: item counts beside each legend category
 $script:catStripe       = $false         # v3.6.0: a second category drawn as a stripe on the bar
 $script:showTentative   = $true          # v3.6.5: draw tentative items hatched (default ON, as since v3.6.0)
+# v3.7.5: OFF by default. The line names the mailbox it read, so it is not
+# something to put on a shared screen or printout unless asked for.
+$script:statusLine      = $false         # v3.7.5: the generated/mailbox/timing line under the year
 $script:noBusy          = $false         # v3.6.0: set when the Table cannot supply BusyStatus (tentative marking then off)
 $script:moveRecheck     = $null          # v3.6.2: when set, the time at which a moved item is re-read once more
 $script:lastCount       = -1             # baseline item count
@@ -861,6 +864,9 @@ $template = @'
   .fpanel .fhead .fth{width:44px;text-align:center}
   .fpanel .fbtns .tfirst{margin-left:auto}
   .fpanel .fcat{padding:0;gap:0;cursor:default}
+  /* v3.7.6: the version, at the foot of the settings panel */
+  .fpanel .fver{font-size:10.5px;color:var(--muted);text-align:right;
+    padding:6px 6px 1px;margin-top:5px;border-top:1px solid var(--gridlight);user-select:text}
   .fpanel .fcat .fshow{display:flex;align-items:center;gap:6px;flex:1;padding:4px 6px;cursor:pointer}
   .fpanel .fcat .ftitle{display:flex;align-items:center;justify-content:center;width:44px;
     align-self:stretch;cursor:pointer;border-left:1px solid var(--gridlight)}
@@ -963,7 +969,7 @@ $template = @'
         <dt>New category</dt><dd>Click <b>+ New category&#8230;</b>, pick an existing Outlook category or type a name to create one, then click or drag days.</dd>
         <dt>Change year</dt><dd>Use the &#8249; &#8250; buttons beside the title, and <b>Today</b> to come back to the current year and show where today is. When the year starts at a month other than January, the arrows step through last year, this year from January, your chosen view, then next year. Previously opened years come back instantly; a year never built before shows a short progress message while it is read.</dd>
         <dt>Calendar</dt><dd><b>Calendar</b> lists your calendars (default store) and switches the whole view &#8212; including creation, deletion and live updates &#8212; to the one you pick. The choice persists across restarts.</dd>
-        <dt>Settings</dt><dd>Click <b>&#9881;</b> to change how YearView behaves: <b>Week starts on</b> Sunday or Monday; <b>Show item counts in legend</b> and <b>Show second category as a stripe</b>, both off by default; <b>Show tentative items hatched</b>, on by default; <b>Page shading</b>, white by default &#8212; <b>Light</b>, <b>Medium</b> or <b>Darker grey</b> tint the page's white areas; <b>Confirm before deleting</b> and <b>Confirm before moving</b>, both on by default; <b>Print &#8212; fit to</b>, one page by default; <b>Print category legend</b>, on by default &#8212; turn it off to leave the row of categories off the printout; and <b>Current year starts at</b>, January by default &#8212; set it to <b>Current month</b> or a named month and the view shows twelve months from there, running on into the following year. Other years always show January to December. Choices are remembered across restarts.</dd>
+        <dt>Settings</dt><dd>Click <b>&#9881;</b> to change how YearView behaves: <b>Week starts on</b> Sunday or Monday; <b>Show item counts in legend</b> and <b>Show second category as a stripe</b>, both off by default; <b>Show tentative items hatched</b>, on by default; <b>Show status line</b>, off by default &#8212; the line under the year naming the mailbox, the item count and the read times; <b>Page shading</b>, white by default &#8212; <b>Light</b>, <b>Medium</b> or <b>Darker grey</b> tint the page's white areas; <b>Confirm before deleting</b> and <b>Confirm before moving</b>, both on by default; <b>Print &#8212; fit to</b>, one page by default; <b>Print category legend</b>, on by default &#8212; turn it off to leave the row of categories off the printout; and <b>Current year starts at</b>, January by default &#8212; set it to <b>Current month</b> or a named month and the view shows twelve months from there, running on into the following year. Other years always show January to December. Choices are remembered across restarts.</dd>
         <dt>Refresh</dt><dd>The view updates itself a few seconds after calendar changes; <b>Refresh</b> forces it. The line beside the year says how long the last update took: <b>Outlook read</b> is the time spent reading the calendar, <b>page data</b> the time spent turning it into this page. Hovering that line breaks both down.</dd>
         <dt>Keyboard</dt><dd><b>&#8592;</b> <b>&#8594;</b> previous and next year &#183; <b>T</b> today &#183; <b>/</b> find &#183; <b>F</b> filter &#183; <b>P</b> print &#183; <b>Esc</b> closes panels and deselects.</dd>
         <dt>Zoom</dt><dd>Ctrl + and Ctrl - (or Ctrl + mouse wheel). F11 toggles full screen.</dd>
@@ -1094,7 +1100,10 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
   let legendCounts = LEGEND_COUNTS === true;
   let catStripe = CAT_STRIPE === true;
   const SHOW_TENTATIVE = __SHOWTENTATIVE__; // v3.6.5: false = tentative items drawn like any other
+  const STATUS_LINE = __STATUSLINE__;       // v3.7.5: false = no status line under the year
+  const YV_VERSION = __VERSION__;           // v3.7.6: stamped from $script:yvVersion - never typed twice
   let showTentative = SHOW_TENTATIVE !== false;
+  let statusLine = STATUS_LINE === true;
   const barEv = new WeakMap();
   // v3.7.4: the bar's own text is no longer a reliable source for its title,
   // because a category set to hide titles now renders an empty bar. The event
@@ -1231,7 +1240,7 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
   const stampEl = document.getElementById("stamp");
   const perf = data.perf || null;
   const secs = ms => (ms / 1000).toFixed(ms >= 9500 ? 0 : 1) + " s";
-  stampEl.textContent =
+  const stampText =
     "Generated " + new Date(data.generated || Date.now()).toLocaleString() +
     (data.source ? " \u00B7 " + data.source : "") + " \u00B7 " + data.events.length + " items" +
     (perf ? " \u00B7 Outlook read " + secs(perf.catMs + perf.setupMs + perf.enumMs + perf.baselineMs) : "") +
@@ -1241,8 +1250,8 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
     (perf && perf.prepMs >= 0 && perf.serMs >= 0
       ? " \u00B7 page data " + secs(perf.prepMs + perf.serMs) : "") +
     (data.truncated ? " \u00B7 \u26A0 truncated at 8000 items" : "") +
-    " \u00B7 YearView version 3.7.4";
-  if (perf) stampEl.title =
+    " \u00B7 YearView version " + YV_VERSION;
+  const stampTitle = !perf ? "" :
     "reader: " + (perf.reader || "classic") +
     " \u00B7 categories " + secs(perf.catMs) + " \u00B7 restrict " + secs(perf.setupMs) +
     " \u00B7 enumerate " + secs(perf.enumMs) + " (" + data.events.length + " items)" +
@@ -1259,6 +1268,22 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
                      : (perf.serMs === -1 ? " \u00B7 serialising not measured on this path" : "")) +
     (perf.validateMs ? " \u00B7 first-build validation +" + secs(perf.validateMs) +
       " (once, then remembered until the reader changes)" : "");
+  // v3.7.5: when the line is off it leaves NOTHING behind. v3.7.4 was the
+  // lesson: text that is merely invisible is still text, and still comes out
+  // of a printed PDF when the bar is selected and copied. This line names the
+  // mailbox, so off means not written at all - not written and hidden.
+  function applyStatusLine(){
+    if (!statusLine){
+      stampEl.textContent = "";
+      stampEl.removeAttribute("title");
+      stampEl.style.display = "none";
+      return;
+    }
+    stampEl.style.display = "";
+    stampEl.textContent = stampText;
+    if (stampTitle) stampEl.title = stampTitle; else stampEl.removeAttribute("title");
+  }
+  applyStatusLine();
 
   // weekday header
   const head = document.getElementById("dowhead");
@@ -2002,6 +2027,10 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
     // hover card still says "Tentative".
     { id: "setShowTentative", key: "showtentative", label: "Show tentative items hatched",
       get: () => showTentative, set: v => { showTentative = v; renderMonths(); } },
+    // v3.7.5: last of the on-screen group. Off by default, and off removes
+    // the line rather than hiding it.
+    { id: "setStatusLine",  key: "statusline",    label: "Show status line",
+      get: () => statusLine,    set: v => { statusLine = v; applyStatusLine(); } },
     { id: "setConfirmDel",  key: "confirmdelete", label: "Confirm before deleting",
       get: () => confirmDelete, set: v => { confirmDelete = v; } },
     { id: "setConfirmMove", key: "confirmmove",   label: "Confirm before moving",
@@ -2032,7 +2061,11 @@ if (typeof module !== "undefined") module.exports = YV;   // node test hook
         o.options.map(p => '<option value="' + p[0] + '">' + esc(p[1]) + '</option>').join("") +
         '</select></label>'
       : '<label class="frow"><input type="checkbox" id="' + o.id + '">' +
-        '<span>' + esc(o.label) + '</span></label>').join("");
+        '<span>' + esc(o.label) + '</span></label>').join("")
+    // v3.7.6: the version, at the foot of the panel. Since v3.7.5 the status
+    // line is off by default, and it was the only thing on screen that said
+    // which version was running.
+    + '<div class="fver">YearView ' + esc(YV_VERSION) + '</div>';
   const setBtn = document.getElementById("setBtn");
   spanel.addEventListener("click", e => e.stopPropagation());
   setBtn.addEventListener("click", e => {
@@ -4131,6 +4164,8 @@ function Build-YearViewHtml {
     $lcLit   = $(if ($script:legendCounts)  { 'true' } else { 'false' })
     $csLit   = $(if ($script:catStripe)     { 'true' } else { 'false' })
     $stnLit  = $(if ($script:showTentative) { 'true' } else { 'false' })
+    $slLit   = $(if ($script:statusLine)    { 'true' } else { 'false' })
+    $verLit  = ConvertTo-SeedStr ([string]$script:yvVersion)
     $smLit   = [string][int]$script:startMonth
     # v3.4.2: when the view starts after January it needs the FOLLOWING year,
     # and fetching that after the page had rendered meant the spill months
@@ -4182,6 +4217,7 @@ function Build-YearViewHtml {
         HIDE = $hideLit; HIDESET = $hideSet; CONFIRMDEL = $confLit; CONFIRMMOVE = $cmLit; SCROLLYEARS = $scrlLit
         PRINTPAGES = $prtLit; PRINTLEGEND = $plgLit; STARTMONTH = $smLit; NOTITLES = $ntLit
         SHADE = $shLit; WEEKSTART = $wsLit; LEGENDCOUNTS = $lcLit; CATSTRIPE = $csLit; SHOWTENTATIVE = $stnLit
+        STATUSLINE = $slLit; VERSION = $verLit
     }
     $fill = {
         param($m)
@@ -4643,6 +4679,7 @@ function Save-Settings {
          ('legendcounts='  + $(if ($script:legendCounts)  { '1' } else { '0' })) + "`r`n" +
          ('catstripe='     + $(if ($script:catStripe)     { '1' } else { '0' })) + "`r`n" +
          ('showtentative=' + $(if ($script:showTentative) { '1' } else { '0' })) + "`r`n" +
+         ('statusline='    + $(if ($script:statusLine)    { '1' } else { '0' })) + "`r`n" +
          ('startmonth='    + [string]$script:startMonth))
 }
 function Load-Settings {
@@ -4665,6 +4702,8 @@ function Load-Settings {
                     'legendcounts'  { $script:legendCounts  = ($kvp[1].Trim() -eq '1') }
                     'catstripe'     { $script:catStripe     = ($kvp[1].Trim() -eq '1') }
                     'showtentative' { $script:showTentative = ($kvp[1].Trim() -ne '0') }
+                    # v3.7.5: off unless the file says exactly '1'
+                    'statusline'    { $script:statusLine    = ($kvp[1].Trim() -eq '1') }
                     'weekstart'     { if ($kvp[1].Trim() -eq '1') { $script:weekStart = 1 } else { $script:weekStart = 0 } }
                     'notitles'      {
                         # v3.4.7: NOT trimmed - a category name is matched exactly.
@@ -4936,6 +4975,7 @@ function Update-SettingLiterals([string]$html) {
                         @('const LEGEND_COUNTS = ',  $script:legendCounts),
                         @('const CAT_STRIPE = ',     $script:catStripe),
                         @('const SHOW_TENTATIVE = ', $script:showTentative),
+                        @('const STATUS_LINE = ',    $script:statusLine),
                         @('const START_MONTH = ',    $script:startMonth))) {
         # v3.4.9: the marker is matched at the START OF A LINE, as it is
         # written in the client. A bare IndexOf found the FIRST occurrence
@@ -5938,7 +5978,7 @@ while ($true) {
                 # table entry rather than a new branch that can drift.
                 $applied = $false
                 $smChanged = $false
-                foreach ($k in @('confirmdelete', 'confirmmove', 'scrollyears', 'printlegend', 'legendcounts', 'catstripe', 'showtentative')) {
+                foreach ($k in @('confirmdelete', 'confirmmove', 'scrollyears', 'printlegend', 'legendcounts', 'catstripe', 'showtentative', 'statusline')) {
                     if ($reqBody -match ('(?:^|&)' + $k + '=([^&]*)')) {
                         $raw = $Matches[1]
                         try { $raw = [uri]::UnescapeDataString($raw.Replace('+', '%20')) } catch {}
@@ -5953,6 +5993,7 @@ while ($true) {
                             'legendcounts'  { $script:legendCounts  = $on }
                             'catstripe'     { $script:catStripe     = $on }
                             'showtentative' { $script:showTentative = $on }
+                            'statusline'    { $script:statusLine    = $on }
                         }
                         $applied = $true
                     }
