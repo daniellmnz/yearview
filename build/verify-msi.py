@@ -13,6 +13,10 @@ package by what is in it rather than by its hash, which also means a msitools
 upgrade cannot quietly change the installer without failing a check.
 
 Usage: build/verify-msi.py [output-directory]      (default: dist)
+       build/verify-msi.py --dump [output-directory]
+
+--dump prints the material the canonical digest is taken over, so two builds
+whose digests disagree can be diffed to find out where.
 """
 
 import hashlib
@@ -25,7 +29,9 @@ import tempfile
 import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-OUT = ROOT / (sys.argv[1] if len(sys.argv) > 1 else "dist")
+ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
+DUMP = "--dump" in sys.argv[1:]
+OUT = ROOT / (ARGS[0] if ARGS else "dist")
 
 # The namespace the product code is derived from, as its UUID rather than the
 # name it came from. uuid5 is a one-way hash, so this is the identical
@@ -224,13 +230,21 @@ def main():
                 # 9 is the package code, 12 and 13 the created and saved times.
                 rows = [r for r in rows if r.split("\t")[0] not in ("9", "12", "13")]
             h.update(f"[{table}]\n".encode())
+            if DUMP:
+                print(f"[{table}]")
             for row in sorted(rows):
                 h.update(row.encode() + b"\n")
+                if DUMP and row:
+                    print(f"  {row}")
         # binary streams msiinfo wrote out, by content
         for p in sorted(tmp.rglob("*")):
             if p.is_file():
-                h.update(p.relative_to(tmp).as_posix().encode())
-                h.update(hashlib.sha256(p.read_bytes()).digest())
+                rel = p.relative_to(tmp).as_posix()
+                d = hashlib.sha256(p.read_bytes()).digest()
+                h.update(rel.encode())
+                h.update(d)
+                if DUMP:
+                    print(f"[stream] {rel} {d.hex()[:32]} {p.stat().st_size} bytes")
         print(f"  {h.hexdigest()}")
         print("  (same digest = same installer; it excludes the package code and build time)")
     finally:

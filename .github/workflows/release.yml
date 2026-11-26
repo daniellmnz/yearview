@@ -57,6 +57,11 @@ jobs:
       - name: Verify the package against its sources
         run: python3 -I build/verify-msi.py | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # The digest material, so a build whose digest disagrees with another
+      # builder's can be diffed from the log without the package in hand.
+      - name: Dump the digest material
+        run: python3 -I build/verify-msi.py --dump | sed -n '/^\[/,$p'
+
       # Every run keeps its package, released or not, so a build can be
       # downloaded and compared against one built anywhere else.
       - name: Keep the package
